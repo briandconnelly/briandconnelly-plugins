@@ -1,0 +1,10 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "briandconnelly-plugins",
+  "version": "0.1.0",
+  "description": "briandconnelly's marketplace for plugins, skills, MCP servers, etc.",
+  "owner": {
+    "name": "Brian Connelly"
+  },
+  "plugins": []
+}
