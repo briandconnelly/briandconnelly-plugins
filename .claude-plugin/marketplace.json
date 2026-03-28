@@ -8,6 +8,12 @@
   },
   "plugins": [
     {
+      "name": "ipinfo",
+      "source": "./ipinfo",
+      "description": "MCP server for getting IP address details, location, and network information via ipinfo.io",
+      "category": "utilities"
+    },
+    {
       "name": "orb-cloud",
       "source": "./orb-cloud",
       "description": "MCP server for managing Orb Cloud organizations and devices",
@@ -17,6 +23,12 @@
       "name": "orbnet",
       "source": "./orbnet",
       "description": "MCP server for monitoring internet quality via Orb Local API",
+      "category": "utilities"
+    },
+    {
+      "name": "tempest",
+      "source": "./tempest",
+      "description": "MCP server for accessing WeatherFlow Tempest personal weather station data",
       "category": "utilities"
     }
   ]
