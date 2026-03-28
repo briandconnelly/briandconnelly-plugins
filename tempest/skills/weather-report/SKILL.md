@@ -5,8 +5,11 @@ description: >-
   WeatherFlow Tempest station. Triggers include "what's the weather," "do I need a
   jacket," "is it going to rain," "should I water the garden," "is there a frost
   risk," "is it safe to spray," "what's the heat index," "how's the pressure
-  trending," or "is it good for a run." Covers briefings, trend analysis, comfort
-  and heat stress, pressure-based forecasting, gardening and frost guidance, and
+  trending," "is it good for a run," "any lightning nearby," "will it snow or
+  rain," "will the trail be dry," "good day for solar," or "is it good for
+  flying a drone." Covers briefings, trend analysis, comfort and heat stress,
+  pressure-based forecasting, gardening and frost guidance, lightning risk,
+  precipitation type, drying conditions, air density, solar radiation, and
   casual weather Q&A.
 user-invocable: true
 argument-hint: "[question or topic]"
@@ -29,6 +32,8 @@ Use WebSearch to supplement station data with seasonal norms, historical weather
 2. **Gather data**: Call `get_observation` for current conditions and `get_forecast` for upcoming weather.
 3. **Analyze and respond** based on what the user needs.
 
+Only call `clear_cache` if the user explicitly requests fresh or uncached data.
+
 ## Weather Briefing
 
 When producing a general briefing or when no specific question is asked:
@@ -37,7 +42,7 @@ When producing a general briefing or when no specific question is asked:
 - Highlight the forecast outlook for the next 12-24 hours
 - Call out anything notable: incoming storms, temperature swings, high UV, frost risk, etc.
 - Use plain language, not raw numbers alone (e.g., "Light breeze from the northwest at 8 mph" not just "wind_avg: 3.6")
-- Include units appropriate to the user's locale if known
+- Use the units configured for the station (check `station_units` in the observation response). If the user requests different units, convert accordingly
 
 ## Trend Analysis
 
@@ -95,6 +100,75 @@ When conditions are relevant, proactively include gardening advice:
 - **Watering guidance**: If measurable precipitation fell in the last 24 hours (`precip_accum_local_day` or `precip_accum_local_yesterday_final`) or rain is forecast with 50%+ probability in the next 24 hours, suggest skipping manual watering.
 - **Wind + spray safety**: Delta-T between 2–8°C indicates safe spray conditions. Below 2°C means poor droplet evaporation; above 10°C means too much evaporation. Combine with low wind (<10 mph) for best results.
 - **UV and sun exposure**: When UV index is 6+, note that it's strong enough to stress transplants and light-skinned fruit.
+
+## Lightning Risk Assessment
+
+Use `lightning_strike_count`, `lightning_strike_count_last_1hr`, `lightning_strike_count_last_3hr`, `lightning_strike_last_distance`, and `lightning_strike_last_epoch` to assess active lightning threat:
+
+- **No risk**: Zero strikes in the last 3 hours.
+- **Distant activity**: Strikes detected but >30 km away. Worth monitoring.
+- **Approaching threat**: Strikes within 15–30 km, especially if count is increasing or distance is decreasing over time. Advise caution for outdoor activities.
+- **Immediate danger**: Strikes within 15 km. Advise seeking shelter immediately — avoid open fields, water, tall isolated objects, and metal structures.
+- **Recency matters**: Check `lightning_strike_last_epoch` against the current time. Strikes more than a few hours old are historical, not an active threat. Use the 1-hour and 3-hour counts to gauge whether activity is ongoing or has passed.
+
+When lightning is detected, proactively flag it even if the user didn't ask.
+
+## Precipitation Type Inference
+
+The station reports precipitation rate but not type.
+Infer the likely precipitation type from temperature and wet bulb temperature:
+
+- **Wet bulb temperature below −1°C (30°F)**: Almost certainly snow.
+- **Wet bulb temperature −1°C to 1.5°C (30–35°F)**: Mixed zone — sleet, freezing rain, or wet snow possible. Flag the ambiguity.
+- **Wet bulb temperature above 1.5°C (35°F)**: Rain.
+- **Air temperature below 0°C (32°F) with wet bulb near 0°C**: Freezing rain risk — warn about icy surfaces even if precipitation appears light.
+
+Mention inferred precipitation type when it is not obviously rain (i.e., when temperatures are near or below freezing and precipitation is occurring).
+
+## Drying Conditions
+
+Combine delta-T, wind speed, and solar radiation to assess how quickly surfaces will dry.
+Useful for questions about outdoor projects, trail conditions, or post-rain timing:
+
+- **Fast drying**: Delta-T above 6°C, wind above 10 mph, and solar radiation above 400 W/m². Surfaces dry within a few hours after rain.
+- **Moderate drying**: Delta-T 3–6°C, light wind, or moderate solar radiation. Allow half a day or more.
+- **Slow drying**: Delta-T below 3°C, calm winds, and overcast (solar radiation below 200 W/m²). Surfaces may stay wet all day. Trails will be muddy.
+
+When the user asks about outdoor projects (painting, staining, concrete) or trail conditions after recent rain, proactively assess drying conditions.
+
+## Air Density & Performance
+
+The station reports `air_density` in kg/m³.
+Standard sea-level air density is approximately 1.225 kg/m³.
+Interpret deviations when relevant:
+
+- **Below 1.15 kg/m³**: Noticeably thin air — reduced engine performance, less drone lift, golf balls and baseballs travel farther, reduced aerodynamic drag.
+- **1.15–1.25 kg/m³**: Normal range for most conditions.
+- **Above 1.30 kg/m³**: Dense air — cold and/or high pressure. Better engine performance, more drone lift, balls travel shorter distances.
+
+Only mention air density when the user asks about sports performance, drone flying, or engine/vehicle performance, or when the value is notably outside the normal range.
+
+## Solar Radiation
+
+Interpret the `solar_radiation` value (W/m²) in practical terms:
+
+- **Above 800 W/m²**: Strong — clear skies, excellent solar panel production, risk of sunburn with prolonged exposure.
+- **400–800 W/m²**: Moderate — partly cloudy or hazy, decent solar production.
+- **200–400 W/m²**: Weak — mostly overcast, limited solar energy.
+- **Below 200 W/m²**: Very low — heavy overcast, rain, or near sunrise/sunset.
+
+Mention solar radiation when the user asks about solar energy, outdoor photography lighting, or when it provides useful context for UV exposure.
+
+## Feels Like Temperature
+
+The station reports `feels_like`, `wind_chill`, and `heat_index`.
+Choose the right metric based on conditions:
+
+- **Wind chill** is only meaningful when air temperature is below 10°C (50°F) and wind speed is above 3 mph (5 km/h). In calm or warm conditions, it equals the air temperature and adds no information.
+- **Heat index** is only meaningful when air temperature is above 27°C (80°F) and relative humidity is above 40%. In cool or dry conditions, it equals the air temperature and adds no information.
+- When neither applies, "feels like" equals the actual temperature — don't report it as a separate metric, just state the temperature.
+
+Only call out feels-like when it meaningfully differs from the actual air temperature (at least 2°C / 4°F difference).
 
 ## Natural Language Q&A
 
