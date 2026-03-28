@@ -1,7 +1,7 @@
 {
   "name": "tempest",
   "description": "MCP server for accessing WeatherFlow Tempest personal weather station data",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "Brian Connelly"
   },
@@ -12,7 +12,7 @@
   "mcpServers": {
     "mcp-server-tempest": {
       "command": "uvx",
-      "args": ["mcp-server-tempest"],
+      "args": ["mcp-server-tempest==0.2.0"],
       "env": {
         "WEATHERFLOW_API_TOKEN": "${WEATHERFLOW_API_TOKEN}",
         "WEATHERFLOW_CACHE_TTL": "${WEATHERFLOW_CACHE_TTL:-300}",
