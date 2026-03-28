@@ -11,8 +11,13 @@
       "name": "orb-cloud",
       "source": "./orb-cloud",
       "description": "MCP server for managing Orb Cloud organizations and devices",
-      "category": "utilities",
-      "keywords": ["orb", "networking", "mcp"]
+      "category": "utilities"
+    },
+    {
+      "name": "orbnet",
+      "source": "./orbnet",
+      "description": "MCP server for monitoring internet quality via Orb Local API",
+      "category": "utilities"
     }
   ]
 }

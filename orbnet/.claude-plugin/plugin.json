@@ -1,0 +1,21 @@
+{
+  "name": "orbnet",
+  "description": "MCP server for monitoring internet quality via Orb Local API",
+  "version": "0.2.0",
+  "author": {
+    "name": "Brian Connelly"
+  },
+  "repository": "https://github.com/briandconnelly/orbnet",
+  "license": "MIT",
+  "keywords": ["orb", "networking", "mcp"],
+  "mcpServers": {
+    "orbnet": {
+      "command": "uvx",
+      "args": ["--from", "orbnet[mcp]", "orbnet-mcp"],
+      "env": {
+        "ORB_HOST": "${ORB_HOST}",
+        "ORB_PORT": "${ORB_PORT:-7080}"
+      }
+    }
+  }
+}
