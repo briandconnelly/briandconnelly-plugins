@@ -12,13 +12,41 @@ description: >
   generate a network report, check uptime, assess fitness for video calls or gaming,
   or configure temporary dataset collection via the Orb Cloud API.
 allowed-tools:
-  - "mcp__orb-cloud__*"
+  - mcp__plugin_orb-cloud_orb-cloud__list_organizations
+  - mcp__plugin_orb-cloud_orb-cloud__list_devices
+  - mcp__plugin_orb-cloud_orb-cloud__get_device_telemetry
+  - mcp__plugin_orb-cloud_orb-cloud__trigger_speedtest
+  - mcp__plugin_orb-cloud_orb-cloud__configure_temp_datasets
+  - mcp__plugin_orbnet_orbnet__get_all_datasets
+  - mcp__plugin_orbnet_orbnet__get_client_info
+  - mcp__plugin_orbnet_orbnet__get_responsiveness
+  - mcp__plugin_orbnet_orbnet__get_scores_1m
+  - mcp__plugin_orbnet_orbnet__get_speed_results
+  - mcp__plugin_orbnet_orbnet__get_web_responsiveness
+  - mcp__plugin_orbnet_orbnet__get_wifi_link
 ---
 
 # Orb Cloud Network Intelligence
 
 This skill enables you to retrieve, interpret, analyze, and act on network observability
-data from Orb Cloud sensors via the `orb-cloud-mcp` MCP server.
+data from Orb sensors using two complementary data sources:
+
+- **Orb Cloud API** (`orb-cloud-mcp`): Fleet management, device listing, live telemetry
+  snapshots, speed test triggering, and temporary dataset configuration. Works remotely
+  for any device in the account.
+- **Orb Local API** (`orbnet`): Direct measurement data from a sensor's local datasets
+  API — scores, responsiveness, speed results, web responsiveness, and Wi-Fi link metrics
+  at 1s/15s/1m granularity. Requires network reachability to the sensor and the Local API
+  to be enabled on the device.
+
+Use Orb Cloud tools for fleet-wide views, device discovery, and remote actions. Use orbnet
+tools when you need detailed measurement data from a specific, reachable sensor. The two
+sources complement each other: use Orb Cloud to identify devices and get a quick telemetry
+snapshot, then use orbnet to pull detailed datasets from a reachable sensor.
+
+If orbnet tools are not available (the user hasn't installed the orbnet plugin), fall back
+to Orb Cloud tools only — `get_device_telemetry` provides live score snapshots but not
+detailed time-series measurements.
 
 ## Prerequisites
 
@@ -26,6 +54,11 @@ The user must have the `orb-cloud-mcp` MCP server connected. If MCP calls fail w
 auth errors, remind the user to check their API key configuration. API keys are created
 in [Orb Cloud → Orchestration → API Keys](https://cloud.orb.net/). API access requires
 an Orb Cloud Plus, Business, or Enterprise plan.
+
+For detailed measurement data, the user also needs the `orbnet` plugin installed with the
+sensor's host and port configured. The sensor must have
+[Local API](https://orb.net/docs/deploy-and-configure/datasets-configuration#local-api)
+access enabled.
 
 ## Key Concept: Orbs Span Multiple Networks
 
@@ -114,28 +147,47 @@ When no match is found, shift to an overview or ask which network to focus on.
 
 ## MCP Tools Overview
 
-The `orb-cloud-mcp` server exposes these tools:
+### Orb Cloud tools (`orb-cloud-mcp`)
 
 | Tool | Description |
 |---|---|
 | `list_organizations` | List and query organizations in the account hierarchy |
 | `list_devices` | List Orb devices with hardware info, location, firmware, and configuration |
-| `get_device_telemetry` | Get real-time connectivity and performance metrics from a device |
+| `get_device_telemetry` | Get live connectivity status and Orb Score snapshot for a device |
 | `trigger_speedtest` | Trigger on-demand content or top speed tests on a device |
 | `configure_temp_datasets` | Configure temporary dataset collection with custom webhook endpoints |
+
+### Orb Local API tools (`orbnet`)
+
+These tools query a sensor's local datasets API directly. They require the sensor to be
+network-reachable and have its Local API enabled. Each tool supports stateful polling — the
+first call returns all buffered data, and subsequent calls return only new records.
+
+| Tool | Description |
+|---|---|
+| `get_scores_1m` | 1-minute Orb Scores with sub-scores and summary metrics |
+| `get_responsiveness` | Lag, latency, jitter, packet loss at 1s/15s/1m granularity |
+| `get_speed_results` | Download/upload speed test results |
+| `get_web_responsiveness` | TTFB and DNS resolution times |
+| `get_wifi_link` | Wi-Fi signal strength, SNR, link rates, channel info at 1s/15s/1m |
+| `get_all_datasets` | Fetch all datasets above in a single call |
+| `get_client_info` | Orb API client configuration details |
 
 ## How to Respond to Common Requests
 
 ### "How's my network?" / General health check
 
-1. List devices via the MCP server (filter by org if user has provided one).
+1. List devices via `list_devices` (filter by org if user has provided one).
 2. Attempt to match the user's current connection to their Orb fleet (see "Matching the
    User's Current Connection" above). If a match is found, lead with that network's data.
 3. If no match or multiple networks, group devices by network (using `isp_name`,
    `network_name`, `city_name`) and either ask which one or give a per-network summary.
-4. For each relevant device, retrieve the latest `scores_1m` data.
+4. Get current scores:
+   - If the matched device is reachable via orbnet, use `get_scores_1m` for detailed data.
+   - Otherwise, use `get_device_telemetry` for a live score snapshot.
 5. Present the **Orb Score** and its three components using the interpretation guide below.
-6. If scores are low, drill into `responsiveness_1m` or `speed_results` to explain *why*.
+6. If scores are low and orbnet is available, drill into `get_responsiveness` or
+   `get_speed_results` to explain *why*.
 
 ### "My internet is slow" / Troubleshooting
 
@@ -146,25 +198,27 @@ actions like repositioning or restarting). If no match, ask whether they're expe
 the issue now (and on which network) or monitoring remotely — this determines what
 actions are feasible.
 
-Then follow this diagnostic ladder — stop as soon as you identify the root cause:
+Then follow this diagnostic ladder — stop as soon as you identify the root cause.
+If orbnet tools are available for the target sensor, use them for steps 1–3 to get
+detailed measurements. Otherwise, use `get_device_telemetry` for a score-level overview.
 
-1. **Check the Orb Score breakdown** (pull `scores_1m`) — which component is dragging the score down?
+1. **Check the Orb Score breakdown** (`get_scores_1m` or `get_device_telemetry`) — which component is dragging the score down?
    - Low **Responsiveness Score** → high lag or latency. Likely congestion or bufferbloat.
    - Low **Reliability Score** → packet loss or extended unresponsive periods. Could be ISP outage, flaky cable, or Wi-Fi interference.
    - Low **Speed Score** → bandwidth below expectations. Could be ISP throttling, congestion, or Wi-Fi bottleneck.
-2. **Compare internet vs router metrics** (pull `responsiveness_1m`) — responsiveness data includes both internet-facing
+2. **Compare internet vs router metrics** (`get_responsiveness`) — responsiveness data includes both internet-facing
    (`lag_avg_us`, `latency_avg_us`) and router-facing (`router_lag_avg_us`, `router_latency_avg_us`)
    measurements. If router metrics are healthy but internet metrics are degraded, the problem
    is upstream of the router (ISP or internet). If both are degraded, suspect the local
    network or Wi-Fi link.
-3. **Check Wi-Fi signal** (pull `wifi_link_1m`) — if the device is on Wi-Fi, look at `rssi_avg` (signal strength)
+3. **Check Wi-Fi signal** (`get_wifi_link`) — if the device is on Wi-Fi, look at `rssi_avg` (signal strength)
    and `snr_avg` (signal-to-noise ratio). Interpret using the thresholds in the reference doc.
 4. **Check for load interference** — the `network_state` dimension tells you if a speed test
    was running during the measurement window. During active speed tests, lag and latency
    readings are expected to be elevated.
-5. **Look at time patterns** — ask the user what time the problem occurs and correlate with
-   historical data. Evening congestion, scheduled backups, or other household traffic can explain
-   periodic degradation.
+5. **Look at time patterns** — ask the user what time the problem occurs. If orbnet data
+   covers the relevant window, look for correlations. Evening congestion, scheduled backups,
+   or other household traffic can explain periodic degradation.
 
 ### "Run a speed test"
 
@@ -189,8 +243,15 @@ results in real time.
 
 ### "Show me trends" / Historical analysis
 
-Retrieve time-series data (scores_1m, responsiveness, speed_results) over the requested
-period. When presenting trends:
+This requires orbnet tools — Orb Cloud's `get_device_telemetry` only returns a live
+snapshot, not historical data. If orbnet is available, use its stateful polling to retrieve
+buffered time-series data (scores_1m, responsiveness, speed_results). The amount of data
+available depends on the sensor's buffer configuration.
+
+If orbnet is not available, let the user know that trend analysis requires the orbnet
+plugin with Local API access to the sensor.
+
+When presenting time-series data:
 
 - Convert timestamps from epoch milliseconds to human-readable times in the user's timezone.
 - Convert microsecond values to milliseconds for readability (1 ms = 1000 µs).
@@ -198,10 +259,14 @@ period. When presenting trends:
 - Highlight significant changes, degradations, or improvements.
 - Note any correlation between events (e.g., speed test running → lag spike).
 
-### "Stream live data"
+### "Stream live data" / Polling for updates
 
-Use the streaming MCP tool to subscribe to real-time metrics from a device. Present
-updates as they arrive, highlighting any values that cross concerning thresholds.
+Use orbnet's stateful polling to check for new data. The first call to any orbnet tool
+returns all buffered data; subsequent calls return only new records since the last poll.
+This makes it efficient to poll periodically for updates. Present new data as it arrives,
+highlighting any values that cross concerning thresholds.
+
+This requires the orbnet plugin and Local API access to the sensor.
 
 ### "Configure data collection" / Temporary datasets
 
@@ -385,7 +450,8 @@ responsiveness, web_responsiveness_results, speed_results, wifi_link), read
 
 ## Troubleshooting the MCP Connection
 
-If MCP tool calls fail:
+### Orb Cloud (`orb-cloud-mcp`)
+
 - **401/403 errors**: API key is invalid or lacks the required permissions. Direct user to
   Orb Cloud → Orchestration → API Keys to verify.
 - **429 errors**: Rate limit exceeded. Implement backoff — wait and retry.
@@ -393,3 +459,14 @@ If MCP tool calls fail:
   Confirm it's listed in the user's MCP server configuration.
 - **Empty device list**: The API key may not have Organization or Device read permissions,
   or the organization may have no linked Orbs.
+
+### Orb Local API (`orbnet`)
+
+- **Connection refused / timeout**: The sensor is not reachable. Check that the sensor is
+  running, the host and port are correct, and the user's machine can reach the sensor's
+  network.
+- **Empty responses**: The Local API may not be enabled on the device. Direct user to enable
+  [Local API](https://orb.net/docs/deploy-and-configure/datasets-configuration#local-api)
+  in the sensor's configuration.
+- **orbnet tools not available**: The user hasn't installed the orbnet plugin. Measurement
+  data requires this plugin — fall back to `get_device_telemetry` for score snapshots only.
