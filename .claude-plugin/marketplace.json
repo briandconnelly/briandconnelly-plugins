@@ -8,6 +8,12 @@
   },
   "plugins": [
     {
+      "name": "cwms",
+      "source": "./plugins/cwms",
+      "description": "MCP server for querying U.S. Army Corps of Engineers water data via the CWMS Data API",
+      "category": "utilities"
+    },
+    {
       "name": "ipinfo",
       "source": "./plugins/ipinfo",
       "description": "MCP server for getting IP address details, location, and network information via ipinfo.io",
