@@ -13,10 +13,11 @@ description: >-
 user-invocable: true
 argument-hint: "[question or topic]"
 allowed-tools:
-  - mcp__plugin_tempest_mcp-server-tempest__get_stations
-  - mcp__plugin_tempest_mcp-server-tempest__get_observation
-  - mcp__plugin_tempest_mcp-server-tempest__get_forecast
-  - mcp__plugin_tempest_mcp-server-tempest__get_station_details
+  - mcp__plugin_tempest_mcp-server-tempest__tempest_get_stations
+  - mcp__plugin_tempest_mcp-server-tempest__tempest_get_observation
+  - mcp__plugin_tempest_mcp-server-tempest__tempest_get_forecast
+  - mcp__plugin_tempest_mcp-server-tempest__tempest_get_station_details
+  - ReadMcpResourceTool
   - WebSearch
 ---
 
@@ -26,15 +27,16 @@ Use WebSearch only to supplement station data with seasonal norms, historical re
 
 ## Workflow
 
-1. **Resolve the station**: Call `get_stations`.
+1. **Resolve the station**: Call `tempest_get_stations`.
    - If one station is returned, use it.
    - If multiple are returned, prefer the most recently active station; if still ambiguous, list the station names and ask the user to choose.
-   - Call `get_station_details` only if you need hardware metadata or calibration info not available in `get_stations`.
+   - Call `tempest_get_station_details` only if you need hardware metadata or calibration info not available in `tempest_get_stations`.
    - If no stations are found, stop and tell the user their account has no Tempest stations configured.
 
 2. **Fetch only what the question requires**:
-   - Current conditions only → `get_observation` alone is sufficient.
-   - Forecast or trend questions → also call `get_forecast`. Use `hours` and `days` to limit depth. Use `detailed=true` for metrics like WBGT, delta-T, and air density that may not appear in the default response.
+   - Current conditions only → `tempest_get_observation` alone is sufficient.
+   - Forecast or trend questions → also call `tempest_get_forecast`. Use `hours` and `days` to set depth, but note that summary (default) mode silently caps output at 6 hourly and 2 daily entries; pass `detailed=true` to lift the cap. Check the response's `truncated` flag and `truncation_hint` (alongside `requested_*` / `returned_*`) to detect clipping before telling the user a range is complete.
+   - Derived/comfort metrics (WBGT, delta-T, wet bulb, heat index, air density, feels-like) → pass `detailed=true` to `tempest_get_observation` or `tempest_get_forecast` (only those two accept the parameter). Concise (default) responses omit null-valued fields to save tokens, so these metrics are often absent unless you request detail.
 
 3. **Check data quality before answering** (see Data Quality below).
 
@@ -46,10 +48,27 @@ Use WebSearch only to supplement station data with seasonal norms, historical re
 
 Before interpreting sensor values, check:
 
-- **Stale data**: Compare the observation timestamp to the current time. If the last observation is more than 10 minutes old, note this before answering.
-- **Null fields**: Some metrics (WBGT, delta-T, air density) require certain conditions to be computed. If a field is null, skip it rather than reporting "null."
+- **Stale data**: Prefer `_meta.ts_retrieved` (RFC 3339 UTC — when the data was actually fetched upstream) over the observation's own timestamp. It may be omitted on some cache hits, so fall back to the observation timestamp when it is absent. `_meta.cache` tells you the source: `miss` means freshly fetched, while `memory` or `disk` means it was served from cache and may be older. If the effective data is more than 10 minutes old, note this before answering.
+- **Missing or null fields**: Concise (default) responses omit null-valued optional fields, so an absent field is not an error. Some metrics (WBGT, delta-T, air density) are only computed under certain conditions. If a metric you need is missing, re-fetch with `detailed=true`; if it is still null, skip it rather than reporting "null."
 - **Implausible values**: A temperature of −50°C or UV of 30 likely indicates a sensor fault. Note the anomaly rather than interpreting the value literally.
 - **Forecast vs. observation disagreement**: If current conditions and the forecast's current snapshot differ substantially, prefer the observation and note the discrepancy.
+
+## Handling Tool Errors
+
+When a tool call fails, the server returns a flat JSON error object instead of weather data, carrying a `code`, a human-readable `message`, a boolean `temporary` flag, and a `request_id`.
+Translate it into plain language for the user — never surface the raw JSON.
+Act on the `code`:
+
+- `auth_missing`, `auth_invalid`, `auth_forbidden`: the `WEATHERFLOW_API_TOKEN` is missing, wrong, or lacks access. Not retryable — tell the user to check their token configuration.
+- `invalid_argument`: a malformed argument was sent. The payload's `field` and `value` identify it; correct the call and retry.
+- `station_not_found`: the station id is unknown. Re-resolve with `tempest_get_stations` rather than retrying the same id.
+- `rate_limited`, `upstream_unavailable`: `temporary` is true. Back off briefly (honor `retry_after_ms` if present), retry once, and if it still fails tell the user the service is briefly unavailable and to try again shortly.
+- `upstream_invalid_response`, `internal_error`: not retryable. Report that the data couldn't be retrieved, and include the `request_id` if the user wants to follow up.
+
+## Server Capabilities
+
+The server exposes a machine-readable `tempest://capabilities` resource (read it with the MCP resource tool) summarizing the available tools, error codes, station scope, and a surface `fingerprint` — the same value that appears in every result's `_meta.fingerprint`.
+You normally don't need it, but consult it if a tool's name or behavior seems to disagree with these instructions, which usually means the server was upgraded.
 
 ## Weather Briefing
 
