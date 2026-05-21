@@ -34,8 +34,8 @@ Use WebSearch only to supplement station data with seasonal norms, historical re
 
 2. **Fetch only what the question requires**:
    - Current conditions only → `tempest_get_observation` alone is sufficient.
-   - Forecast or trend questions → also call `tempest_get_forecast`. Use `hours` and `days` to limit depth.
-   - Derived/comfort metrics (WBGT, delta-T, wet bulb, heat index, air density, feels-like) → pass `detailed=true` to whichever tool you call. Concise (default) responses omit null-valued fields to save tokens, so these metrics are often absent unless you request detail.
+   - Forecast or trend questions → also call `tempest_get_forecast`. Use `hours` and `days` to set depth, but note that summary (default) mode silently caps output at 6 hourly and 2 daily entries; pass `detailed=true` to lift the cap. Check the response's `truncated` flag and `truncation_hint` (alongside `requested_*` / `returned_*`) to detect clipping before telling the user a range is complete.
+   - Derived/comfort metrics (WBGT, delta-T, wet bulb, heat index, air density, feels-like) → pass `detailed=true` to `tempest_get_observation` or `tempest_get_forecast` (only those two accept the parameter). Concise (default) responses omit null-valued fields to save tokens, so these metrics are often absent unless you request detail.
 
 3. **Check data quality before answering** (see Data Quality below).
 
