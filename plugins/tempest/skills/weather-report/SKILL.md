@@ -17,6 +17,7 @@ allowed-tools:
   - mcp__plugin_tempest_mcp-server-tempest__tempest_get_observation
   - mcp__plugin_tempest_mcp-server-tempest__tempest_get_forecast
   - mcp__plugin_tempest_mcp-server-tempest__tempest_get_station_details
+  - ReadMcpResourceTool
   - WebSearch
 ---
 
@@ -47,10 +48,27 @@ Use WebSearch only to supplement station data with seasonal norms, historical re
 
 Before interpreting sensor values, check:
 
-- **Stale data**: Compare the observation timestamp to the current time. If the last observation is more than 10 minutes old, note this before answering.
+- **Stale data**: Prefer `_meta.ts_retrieved` (RFC 3339 UTC — when the data was actually fetched upstream) over the observation's own timestamp. It may be omitted on some cache hits, so fall back to the observation timestamp when it is absent. `_meta.cache` tells you the source: `miss` means freshly fetched, while `memory` or `disk` means it was served from cache and may be older. If the effective data is more than 10 minutes old, note this before answering.
 - **Missing or null fields**: Concise (default) responses omit null-valued optional fields, so an absent field is not an error. Some metrics (WBGT, delta-T, air density) are only computed under certain conditions. If a metric you need is missing, re-fetch with `detailed=true`; if it is still null, skip it rather than reporting "null."
 - **Implausible values**: A temperature of −50°C or UV of 30 likely indicates a sensor fault. Note the anomaly rather than interpreting the value literally.
 - **Forecast vs. observation disagreement**: If current conditions and the forecast's current snapshot differ substantially, prefer the observation and note the discrepancy.
+
+## Handling Tool Errors
+
+When a tool call fails, the server returns a flat JSON error object instead of weather data, carrying a `code`, a human-readable `message`, a boolean `temporary` flag, and a `request_id`.
+Translate it into plain language for the user — never surface the raw JSON.
+Act on the `code`:
+
+- `auth_missing`, `auth_invalid`, `auth_forbidden`: the `WEATHERFLOW_API_TOKEN` is missing, wrong, or lacks access. Not retryable — tell the user to check their token configuration.
+- `invalid_argument`: a malformed argument was sent. The payload's `field` and `value` identify it; correct the call and retry.
+- `station_not_found`: the station id is unknown. Re-resolve with `tempest_get_stations` rather than retrying the same id.
+- `rate_limited`, `upstream_unavailable`: `temporary` is true. Back off briefly (honor `retry_after_ms` if present), retry once, and if it still fails tell the user the service is briefly unavailable and to try again shortly.
+- `upstream_invalid_response`, `internal_error`: not retryable. Report that the data couldn't be retrieved, and include the `request_id` if the user wants to follow up.
+
+## Server Capabilities
+
+The server exposes a machine-readable `tempest://capabilities` resource (read it with the MCP resource tool) summarizing the available tools, error codes, station scope, and a surface `fingerprint` — the same value that appears in every result's `_meta.fingerprint`.
+You normally don't need it, but consult it if a tool's name or behavior seems to disagree with these instructions, which usually means the server was upgraded.
 
 ## Weather Briefing
 
