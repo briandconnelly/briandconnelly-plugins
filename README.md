@@ -1,6 +1,6 @@
-# briandconnelly's Plugin Marketplace
+# briandconnelly's Plugin Marketplaces
 
-Skills, MCP servers, and more as Claude Code plugins.
+Skills, MCP servers, and more as Claude Code and Codex plugins.
 
 ## Setup
 
@@ -10,9 +10,16 @@ Add this marketplace to Claude Code:
 /plugin marketplace add briandconnelly/briandconnelly-plugins
 ```
 
+Add this marketplace to Codex:
+
+```
+codex plugin marketplace add briandconnelly/briandconnelly-plugins
+```
+
 ## Available Plugins
 
-Install a plugin with `/plugin install <plugin>@briandconnelly-plugins`.
+In Claude Code, install a plugin with `/plugin install <plugin>@briandconnelly-plugins`.
+In Codex, install plugins from the `briandconnelly-plugins` marketplace after adding it.
 
 | **Plugin** | **Description** |
 | --- | --- |

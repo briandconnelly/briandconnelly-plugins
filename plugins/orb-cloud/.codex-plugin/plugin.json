@@ -1,0 +1,25 @@
+{
+  "name": "orb-cloud",
+  "version": "0.1.1",
+  "description": "MCP server for managing Orb Cloud organizations and devices",
+  "author": {
+    "name": "Brian Connelly",
+    "url": "https://github.com/briandconnelly"
+  },
+  "repository": "https://github.com/briandconnelly/orb-cloud-mcp",
+  "license": "MIT",
+  "keywords": ["orb", "networking", "mcp"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Orb Cloud",
+    "shortDescription": "Manage Orb Cloud organizations and devices.",
+    "longDescription": "Orb Cloud provides Codex with an MCP server and skill for managing Orb Cloud organizations, devices, and related diagnostics.",
+    "developerName": "Brian Connelly",
+    "category": "Utilities",
+    "capabilities": ["MCP", "Skills"],
+    "defaultPrompt": [
+      "Check my Orb Cloud devices."
+    ]
+  }
+}

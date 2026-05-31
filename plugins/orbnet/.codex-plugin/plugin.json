@@ -1,0 +1,24 @@
+{
+  "name": "orbnet",
+  "version": "0.2.0",
+  "description": "MCP server for monitoring internet quality via Orb Local API",
+  "author": {
+    "name": "Brian Connelly",
+    "url": "https://github.com/briandconnelly"
+  },
+  "repository": "https://github.com/briandconnelly/orbnet",
+  "license": "MIT",
+  "keywords": ["orb", "networking", "mcp"],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Orbnet",
+    "shortDescription": "Monitor internet quality through Orb Local API.",
+    "longDescription": "Orbnet provides Codex with an MCP server for monitoring internet quality through the Orb Local API.",
+    "developerName": "Brian Connelly",
+    "category": "Utilities",
+    "capabilities": ["MCP"],
+    "defaultPrompt": [
+      "Check current internet quality."
+    ]
+  }
+}

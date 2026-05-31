@@ -1,0 +1,68 @@
+{
+  "name": "briandconnelly-plugins",
+  "interface": {
+    "displayName": "briandconnelly's Plugins"
+  },
+  "plugins": [
+    {
+      "name": "cwms",
+      "source": {
+        "source": "local",
+        "path": "./plugins/cwms"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Utilities"
+    },
+    {
+      "name": "ipinfo",
+      "source": {
+        "source": "local",
+        "path": "./plugins/ipinfo"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Utilities"
+    },
+    {
+      "name": "orb-cloud",
+      "source": {
+        "source": "local",
+        "path": "./plugins/orb-cloud"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Utilities"
+    },
+    {
+      "name": "orbnet",
+      "source": {
+        "source": "local",
+        "path": "./plugins/orbnet"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Utilities"
+    },
+    {
+      "name": "tempest",
+      "source": {
+        "source": "local",
+        "path": "./plugins/tempest"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Utilities"
+    }
+  ]
+}

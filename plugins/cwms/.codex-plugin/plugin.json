@@ -1,0 +1,24 @@
+{
+  "name": "cwms",
+  "version": "0.2.0",
+  "description": "MCP server for querying U.S. Army Corps of Engineers water data via the CWMS Data API",
+  "author": {
+    "name": "Brian Connelly",
+    "url": "https://github.com/briandconnelly"
+  },
+  "repository": "https://github.com/briandconnelly/cwms-tools",
+  "license": "MIT",
+  "keywords": ["cwms", "water", "hydrology", "usace", "mcp"],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "CWMS",
+    "shortDescription": "Query U.S. Army Corps of Engineers water data.",
+    "longDescription": "CWMS provides Codex with an MCP server for querying U.S. Army Corps of Engineers water data through the CWMS Data API.",
+    "developerName": "Brian Connelly",
+    "category": "Utilities",
+    "capabilities": ["MCP"],
+    "defaultPrompt": [
+      "Find recent CWMS water data."
+    ]
+  }
+}

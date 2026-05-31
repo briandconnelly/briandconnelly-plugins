@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "orbnet": {
+      "command": "uvx",
+      "args": ["--from", "orbnet[mcp]", "orbnet-mcp"],
+      "env": {
+        "ORB_HOST": "${ORB_HOST}",
+        "ORB_PORT": "${ORB_PORT:-7080}"
+      }
+    }
+  }
+}

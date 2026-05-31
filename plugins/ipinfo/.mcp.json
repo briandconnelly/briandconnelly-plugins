@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "mcp-server-ipinfo": {
+      "command": "uvx",
+      "args": ["mcp-server-ipinfo==0.6.0"],
+      "env": {
+        "IPINFO_API_TOKEN": "${IPINFO_API_TOKEN}",
+        "IPINFO_CACHE_TTL": "${IPINFO_CACHE_TTL:-3600}"
+      }
+    }
+  }
+}

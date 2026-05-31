@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cwms-tools": {
+      "command": "uvx",
+      "args": ["cwms-tools==0.2.0", "mcp", "serve"]
+    }
+  }
+}

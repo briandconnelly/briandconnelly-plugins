@@ -1,0 +1,24 @@
+{
+  "name": "ipinfo",
+  "version": "0.6.0",
+  "description": "MCP server for getting IP address details, location, and network information via ipinfo.io",
+  "author": {
+    "name": "Brian Connelly",
+    "url": "https://github.com/briandconnelly"
+  },
+  "repository": "https://github.com/briandconnelly/mcp-server-ipinfo",
+  "license": "MIT",
+  "keywords": ["ip", "networking", "geolocation", "mcp"],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "IPinfo",
+    "shortDescription": "Look up IP address and network details.",
+    "longDescription": "IPinfo provides Codex with an MCP server for getting IP address details, location, and network information through ipinfo.io.",
+    "developerName": "Brian Connelly",
+    "category": "Utilities",
+    "capabilities": ["MCP"],
+    "defaultPrompt": [
+      "Look up details for this IP."
+    ]
+  }
+}

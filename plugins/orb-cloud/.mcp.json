@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "orb-cloud": {
+      "command": "uvx",
+      "args": ["orb-cloud-mcp"],
+      "env": {
+        "ORB_CLOUD_API_KEY": "${ORB_CLOUD_API_KEY}",
+        "ORB_CLOUD_CACHE_TTL": "${ORB_CLOUD_CACHE_TTL:-300}"
+      }
+    }
+  }
+}
