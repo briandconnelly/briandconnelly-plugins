@@ -36,6 +36,12 @@
       "source": "./plugins/tempest",
       "description": "MCP server for accessing WeatherFlow Tempest personal weather station data",
       "category": "utilities"
+    },
+    {
+      "name": "voice-notify",
+      "source": "./plugins/voice-notify",
+      "description": "Speak Claude Code Stop and Notification events aloud via macOS say",
+      "category": "utilities"
     }
   ]
 }
