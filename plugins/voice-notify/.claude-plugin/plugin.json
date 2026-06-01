@@ -1,12 +1,11 @@
 {
   "name": "voice-notify",
   "description": "Speak Claude Code Stop and Notification events aloud via macOS say",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "Brian Connelly"
   },
   "repository": "https://github.com/briandconnelly/briandconnelly-plugins",
   "license": "MIT",
-  "keywords": ["notifications", "tts", "say", "macos", "hooks", "accessibility"],
-  "hooks": "./hooks/hooks.json"
+  "keywords": ["notifications", "tts", "say", "macos", "hooks", "accessibility"]
 }
