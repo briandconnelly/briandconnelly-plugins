@@ -3,3 +3,6 @@
 .DS_Store
 __pycache__/
 *.pyc
+
+# Superpowers brainstorming/planning docs — kept locally, not committed
+docs/superpowers/
