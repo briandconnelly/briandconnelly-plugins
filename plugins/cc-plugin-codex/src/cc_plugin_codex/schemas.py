@@ -57,6 +57,7 @@ class ContextSummary(BaseModel):
 class Meta(BaseModel):
     model_config = ConfigDict(extra="forbid")
     cwd: str
+    workspace_source: Optional[str] = None   # how cwd was resolved: param|roots|cwd
     config_mode: ConfigMode
     access: Access
     scope: Optional[str] = None

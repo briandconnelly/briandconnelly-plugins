@@ -7,8 +7,10 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from typing import Annotated, Optional
+from urllib.parse import unquote, urlparse
 
-from fastmcp import FastMCP
+import anyio
+from fastmcp import Context, FastMCP
 from fastmcp.tools.tool import ToolResult
 from pydantic import Field
 
@@ -82,10 +84,12 @@ def _result(payload: dict) -> ToolResult:
 
 def _meta(cwd: str, config_mode: str, access: str, timeout: int, elapsed: int,
           exit_code: int | None, scope: str | None = None, base: str | None = None,
-          truncated: bool = False, hint: str | None = None) -> Meta:
+          truncated: bool = False, hint: str | None = None,
+          workspace_source: str | None = None) -> Meta:
     return Meta(cwd=cwd, config_mode=config_mode, access=access, scope=scope, base=base,
                 timeout_seconds=timeout, elapsed_ms=elapsed, command_exit_code=exit_code,
-                truncated=truncated, truncation_hint=hint, fingerprint=FINGERPRINT)
+                truncated=truncated, truncation_hint=hint, fingerprint=FINGERPRINT,
+                workspace_source=workspace_source)
 
 
 def _err(code: str, message: str, repair: str, meta: Meta,
@@ -95,6 +99,46 @@ def _err(code: str, message: str, repair: str, meta: Meta,
                         offending_param=offending, retryable=retryable),
         meta=meta,
     ).model_dump(mode="json", exclude_none=True)
+
+
+async def _first_root(ctx) -> str | None:
+    """Return the filesystem path of the client's first file:// root, or None.
+
+    Returns None if the client provides no roots or does not support the roots
+    capability (list_roots raises)."""
+    if ctx is None:
+        return None
+    try:
+        roots = await ctx.list_roots()
+    except Exception:
+        return None
+    for root in roots or []:
+        uri = str(getattr(root, "uri", ""))
+        if uri.startswith("file://"):
+            return unquote(urlparse(uri).path)
+    return None
+
+
+async def _resolve_workspace(workspace_root, ctx):
+    """Resolve the workspace directory.
+
+    Order: explicit workspace_root arg -> first file:// MCP root -> os.getcwd().
+    Returns (path, error_code, source). error_code is None on success; on failure
+    path is None and source is None."""
+    if workspace_root:
+        path, source = workspace_root, "param"
+    else:
+        root = await _first_root(ctx)
+        if root:
+            path, source = root, "roots"
+        else:
+            path, source = os.getcwd(), "cwd"
+    # An explicit workspace_root must be absolute: a relative path would be resolved
+    # against the very cwd this resolution exists to stop trusting. Roots (file:// URIs)
+    # and os.getcwd() are always absolute already.
+    if not os.path.isabs(path) or not os.path.isdir(path):
+        return None, "invalid_workspace_root", None
+    return path, None, source
 
 
 @dataclass
@@ -108,7 +152,7 @@ class Resolved:
 
 
 def _resolve(config_mode, access, model, max_budget_usd, timeout_seconds, detail,
-             cwd, scope=None, base=None):
+             cwd, scope=None, base=None, workspace_source=None):
     """Resolve env defaults + clamps and validate. Returns (Resolved, None) or (None, error_dict)."""
     d = defaults()
     cm = config_mode or d.config_mode
@@ -122,16 +166,18 @@ def _resolve(config_mode, access, model, max_budget_usd, timeout_seconds, detail
     # would raise Pydantic errors before we can return a structured response).
     if cm not in ("inherit", "scoped", "bare"):
         safe_meta = _meta(cwd, "inherit", ac if ac in ("toolless", "readonly") else "toolless",
-                          timeout, 0, None, scope, base)
+                          timeout, 0, None, scope, base, workspace_source=workspace_source)
         return None, _err("unsupported_config_mode", f"Unknown config_mode '{cm}'.",
                           "Use one of: inherit, scoped, bare.", safe_meta,
                           offending="config_mode")
     if ac not in ("toolless", "readonly"):
-        safe_meta = _meta(cwd, cm, "toolless", timeout, 0, None, scope, base)
+        safe_meta = _meta(cwd, cm, "toolless", timeout, 0, None, scope, base,
+                          workspace_source=workspace_source)
         return None, _err("unsupported_access", f"Unknown access '{ac}'.",
                           "Use one of: toolless, readonly.", safe_meta, offending="access")
 
-    meta = _meta(cwd, cm, ac, timeout, 0, None, scope, base)
+    meta = _meta(cwd, cm, ac, timeout, 0, None, scope, base,
+                 workspace_source=workspace_source)
     if cm == "bare" and not bare_available():
         return None, _err("api_key_required",
                           "config_mode=bare requires ANTHROPIC_API_KEY, which is unset.",
@@ -141,12 +187,13 @@ def _resolve(config_mode, access, model, max_budget_usd, timeout_seconds, detail
 
 
 def _execute(tool, payload, r: Resolved, cwd,
-             scope=None, base=None, context_text="", context_summary=None) -> dict:
+             scope=None, base=None, context_text="", context_summary=None,
+             workspace_source=None) -> dict:
     prompt = build_prompt(tool, payload, context_text)
     cmd = build_command(prompt, r.config_mode, r.access, r.model, r.budget)
     run = run_claude(cmd, cwd=cwd, timeout_seconds=r.timeout)
     meta = _meta(cwd, r.config_mode, r.access, r.timeout, run.elapsed_ms, run.exit_code,
-                 scope, base)
+                 scope, base, workspace_source=workspace_source)
     if run.exit_code != 0 or run.timed_out:
         info = classify_failure(run)
         return _err(info.code, info.message, info.repair, meta, retryable=info.retryable)
@@ -156,15 +203,19 @@ def _execute(tool, payload, r: Resolved, cwd,
 
 @mcp.tool(annotations=_PAID_ANNOTATIONS, title="Ask Claude (second opinion)",
           output_schema=RESULT_SCHEMA)
-def claude_ask(
+async def claude_ask(
     prompt: Annotated[str, Field(description="The question to ask Claude.")],
     context: Annotated[Optional[str], Field(description="Extra context, passed verbatim.")] = None,
+    workspace_root: Annotated[Optional[str], Field(
+        description="Absolute path to the repo/workspace to operate in. If omitted, "
+        "the server uses the client's first MCP root, else its own cwd.")] = None,
     config_mode: Annotated[Optional[ConfigMode], Field(description="inherit|scoped|bare")] = None,
     access: Annotated[Optional[Access], Field(description="toolless|readonly")] = None,
     model: Optional[str] = None,
     max_budget_usd: Optional[float] = None,
     timeout_seconds: Optional[int] = None,
     detail: Annotated[Detail, Field(description="summary|full")] = "summary",
+    ctx: Context = None,
 ) -> ToolResult:
     """Ask Claude for an independent second opinion or recommendation.
 
@@ -177,29 +228,47 @@ def claude_ask(
     other failures return ok:false. Errors come back as
     {"ok": false, "error": {code, message, repair}} with is_error set — branch on
     `ok`. Possible error codes: unsupported_config_mode, unsupported_access,
-    api_key_required, claude_not_found, claude_auth_required, claude_permission_error,
-    timeout, budget_exceeded, nonzero_exit, invalid_json, internal_error.
+    api_key_required, invalid_workspace_root, claude_not_found, claude_auth_required,
+    claude_permission_error, timeout, budget_exceeded, nonzero_exit, invalid_json,
+    internal_error.
+
+    workspace_root: absolute path to the repo to operate in; if omitted, the
+    server uses the client's first MCP root, else its own cwd (see meta.workspace_source).
+    Adds error code: invalid_workspace_root (path missing or not absolute).
     """
-    cwd = os.getcwd()
+    cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
+    if ws_err:
+        meta = _meta("", "inherit", "toolless", 0, 0, None)
+        return _result(_err(ws_err,
+                       f"workspace_root '{workspace_root}' is not an existing absolute directory.",
+                       "Pass workspace_root as an absolute path to an existing directory, or "
+                       "configure an MCP root.", meta, offending="workspace_root"))
     r, err = _resolve(config_mode, access, model, max_budget_usd, timeout_seconds,
-                      detail, cwd)
+                      detail, cwd, workspace_source=ws_source)
     if err:
         return _result(err)
-    return _result(_execute("claude_ask", {"prompt": prompt, "context": context}, r, cwd))
+    payload = {"prompt": prompt, "context": context}
+    out = await anyio.to_thread.run_sync(
+        lambda: _execute("claude_ask", payload, r, cwd, workspace_source=ws_source))
+    return _result(out)
 
 
 @mcp.tool(annotations=_PAID_ANNOTATIONS, title="Review changes with Claude",
           output_schema=RESULT_SCHEMA)
-def claude_review_changes(
+async def claude_review_changes(
     scope: Annotated[Scope, Field(description="working_tree|staged|branch")],
     base: Annotated[str, Field(description="Base ref for scope=branch.")] = "main",
     focus: Annotated[Optional[str], Field(description="e.g. 'security', 'tests'.")] = None,
+    workspace_root: Annotated[Optional[str], Field(
+        description="Absolute path to the repo/workspace to operate in. If omitted, "
+        "the server uses the client's first MCP root, else its own cwd.")] = None,
     config_mode: Annotated[Optional[ConfigMode], Field(description="inherit|scoped|bare")] = None,
     access: Annotated[Optional[Access], Field(description="toolless|readonly")] = None,
     model: Optional[str] = None,
     max_budget_usd: Optional[float] = None,
     timeout_seconds: Optional[int] = None,
     detail: Annotated[Detail, Field(description="summary|full")] = "summary",
+    ctx: Context = None,
 ) -> ToolResult:
     """Have Claude review a git diff for correctness, regressions, security, tests.
 
@@ -211,19 +280,32 @@ def claude_review_changes(
     framework as a schema validation error BEFORE the tool runs and do NOT use the
     ok:false envelope; all other failures return ok:false. Branch on `ok` (is_error
     is set on failure); error codes: unsupported_config_mode, unsupported_access,
-    api_key_required, invalid_scope, invalid_base, context_too_large,
-    claude_not_found, claude_auth_required, claude_permission_error, timeout,
-    budget_exceeded, nonzero_exit, invalid_json, internal_error.
+    api_key_required, invalid_workspace_root, invalid_scope, invalid_base,
+    context_too_large, claude_not_found, claude_auth_required,
+    claude_permission_error, timeout, budget_exceeded, nonzero_exit, invalid_json,
+    internal_error.
+
+    workspace_root: absolute path to the repo to operate in; if omitted, the
+    server uses the client's first MCP root, else its own cwd (see meta.workspace_source).
+    Adds error code: invalid_workspace_root (path missing or not absolute).
     """
-    cwd = os.getcwd()
+    cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
+    if ws_err:
+        meta = _meta("", "inherit", "toolless", 0, 0, None)
+        return _result(_err(ws_err,
+                       f"workspace_root '{workspace_root}' is not an existing absolute directory.",
+                       "Pass workspace_root as an absolute path to an existing directory, or "
+                       "configure an MCP root.", meta, offending="workspace_root"))
     # Validate options BEFORE touching git, so bad config isn't masked by git errors.
     r, err = _resolve(config_mode, access, model, max_budget_usd, timeout_seconds,
-                      detail, cwd, scope=scope, base=base)
+                      detail, cwd, scope=scope, base=base, workspace_source=ws_source)
     if err:
         return _result(err)
-    meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base)
+    meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
+                 workspace_source=ws_source)
     try:
-        ctx = gather_context(cwd, scope=scope, base=base)
+        ctx_data = await anyio.to_thread.run_sync(
+            lambda: gather_context(cwd, scope=scope, base=base))
     except InvalidBaseError:
         return _result(_err("invalid_base", f"Invalid base ref '{base}'.",
                        "Use an existing git ref matching [A-Za-z0-9._/-]+ that does "
@@ -234,30 +316,35 @@ def claude_review_changes(
     except RuntimeError as e:
         return _result(_err("internal_error", f"git failed: {e}",
                        "Ensure cwd is a git repo and base ref exists.", meta))
-    if ctx.truncated:
+    if ctx_data.truncated:
         meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
-                     truncated=True, hint=ctx.truncation_hint)
+                     truncated=True, hint=ctx_data.truncation_hint, workspace_source=ws_source)
         return _result(_err("context_too_large", "The diff is too large to review safely.",
-                       ctx.truncation_hint or "Narrow the scope.", meta))
-    return _result(_execute("claude_review_changes",
-                   {"scope": scope, "base": base, "focus": focus}, r, cwd,
-                   scope=scope, base=base,
-                   context_text=ctx.text, context_summary=ctx.summary))
+                       ctx_data.truncation_hint or "Narrow the scope.", meta))
+    out = await anyio.to_thread.run_sync(lambda: _execute(
+        "claude_review_changes", {"scope": scope, "base": base, "focus": focus},
+        r, cwd, scope=scope, base=base, context_text=ctx_data.text,
+        context_summary=ctx_data.summary, workspace_source=ws_source))
+    return _result(out)
 
 
 @mcp.tool(annotations=_PAID_ANNOTATIONS, title="Adversarial review with Claude",
           output_schema=RESULT_SCHEMA)
-def claude_adversarial_review(
+async def claude_adversarial_review(
     target: Annotated[str, Field(description="The plan/claim/decision to attack.")],
     evidence: Annotated[Optional[str], Field(description="Supporting evidence.")] = None,
     scope: Annotated[Optional[Scope], Field(description="Optionally attach a diff: working_tree|staged|branch")] = None,
     base: str = "main",
+    workspace_root: Annotated[Optional[str], Field(
+        description="Absolute path to the repo/workspace to operate in. If omitted, "
+        "the server uses the client's first MCP root, else its own cwd.")] = None,
     config_mode: Annotated[Optional[ConfigMode], Field(description="inherit|scoped|bare")] = None,
     access: Annotated[Optional[Access], Field(description="toolless|readonly")] = None,
     model: Optional[str] = None,
     max_budget_usd: Optional[float] = None,
     timeout_seconds: Optional[int] = None,
     detail: Annotated[Detail, Field(description="summary|full")] = "summary",
+    ctx: Context = None,
 ) -> ToolResult:
     """Have Claude attack a plan or claim and surface the strongest counterarguments.
 
@@ -267,20 +354,32 @@ def claude_adversarial_review(
     enum params (config_mode, access, scope, detail) are rejected by the framework
     as a schema validation error BEFORE the tool runs and do NOT use the ok:false
     envelope; all other failures return ok:false. Branch on `ok` (is_error is set
-    on failure). Attaching a scope adds invalid_scope, invalid_base, and
-    context_too_large to the possible error codes.
+    on failure). Always possible: invalid_workspace_root. Attaching a scope adds
+    invalid_scope, invalid_base, and context_too_large to the possible error codes.
+
+    workspace_root: absolute path to the repo to operate in; if omitted, the
+    server uses the client's first MCP root, else its own cwd (see meta.workspace_source).
+    Adds error code: invalid_workspace_root (path missing or not absolute).
     """
-    cwd = os.getcwd()
+    cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
+    if ws_err:
+        meta = _meta("", "inherit", "toolless", 0, 0, None)
+        return _result(_err(ws_err,
+                       f"workspace_root '{workspace_root}' is not an existing absolute directory.",
+                       "Pass workspace_root as an absolute path to an existing directory, or "
+                       "configure an MCP root.", meta, offending="workspace_root"))
     r, err = _resolve(config_mode, access, model, max_budget_usd, timeout_seconds,
-                      detail, cwd, scope=scope, base=base)
+                      detail, cwd, scope=scope, base=base, workspace_source=ws_source)
     if err:
         return _result(err)
     context_text = ""
     context_summary = None
     if scope:
-        meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base)
+        meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
+                     workspace_source=ws_source)
         try:
-            ctx = gather_context(cwd, scope=scope, base=base)
+            ctx_data = await anyio.to_thread.run_sync(
+                lambda: gather_context(cwd, scope=scope, base=base))
         except InvalidBaseError:
             return _result(_err("invalid_base", f"Invalid base ref '{base}'.",
                            "Use an existing git ref matching [A-Za-z0-9._/-]+ that does "
@@ -292,17 +391,19 @@ def claude_adversarial_review(
         except RuntimeError as e:
             return _result(_err("internal_error", f"git failed: {e}",
                            "Ensure cwd is a git repo and base ref exists.", meta))
-        if ctx.truncated:
+        if ctx_data.truncated:
             meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
-                         truncated=True, hint=ctx.truncation_hint)
+                         truncated=True, hint=ctx_data.truncation_hint,
+                         workspace_source=ws_source)
             return _result(_err("context_too_large",
                            "The attached diff is too large to review safely.",
-                           ctx.truncation_hint or "Narrow the scope.", meta))
-        context_text, context_summary = ctx.text, ctx.summary
-    return _result(_execute("claude_adversarial_review",
-                   {"target": target, "evidence": evidence}, r, cwd,
-                   scope=scope, base=base, context_text=context_text,
-                   context_summary=context_summary))
+                           ctx_data.truncation_hint or "Narrow the scope.", meta))
+        context_text, context_summary = ctx_data.text, ctx_data.summary
+    out = await anyio.to_thread.run_sync(lambda: _execute(
+        "claude_adversarial_review", {"target": target, "evidence": evidence},
+        r, cwd, scope=scope, base=base, context_text=context_text,
+        context_summary=context_summary, workspace_source=ws_source))
+    return _result(out)
 
 
 @mcp.tool(annotations=_STATUS_ANNOTATIONS, title="Claude CLI status & defaults",

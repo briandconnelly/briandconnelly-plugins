@@ -4,9 +4,76 @@ import pytest
 from fastmcp import Client
 
 from cc_plugin_codex.server import CAPABILITY_SUMMARY, mcp
+from cc_plugin_codex.server import _first_root, _resolve_workspace
 from tests.conftest import structured
 
 PAID_TOOLS = ("claude_ask", "claude_review_changes", "claude_adversarial_review")
+
+
+class _FakeRoots:
+    """Minimal stand-in for a FastMCP Context exposing list_roots()."""
+    def __init__(self, uris=None, raises=False):
+        self._uris = uris or []
+        self._raises = raises
+
+    async def list_roots(self):
+        if self._raises:
+            raise RuntimeError("client does not support roots")
+        return [type("R", (), {"uri": u})() for u in self._uris]
+
+
+async def test_first_root_returns_path_from_file_uri():
+    ctx = _FakeRoots(["file:///home/me/project"])
+    assert await _first_root(ctx) == "/home/me/project"
+
+
+async def test_first_root_none_when_unsupported():
+    assert await _first_root(_FakeRoots(raises=True)) is None
+
+
+async def test_first_root_skips_non_file_uris():
+    ctx = _FakeRoots(["https://example.com/x", "file:///ok"])
+    assert await _first_root(ctx) == "/ok"
+
+
+async def test_resolve_workspace_param_beats_roots(tmp_path):
+    ctx = _FakeRoots(["file:///should/not/win"])
+    path, err, source = await _resolve_workspace(str(tmp_path), ctx)
+    assert err is None
+    assert path == str(tmp_path)
+    assert source == "param"
+
+
+async def test_resolve_workspace_uses_roots_when_no_param(tmp_path):
+    ctx = _FakeRoots([f"file://{tmp_path}"])
+    path, err, source = await _resolve_workspace(None, ctx)
+    assert err is None
+    assert path == str(tmp_path)
+    assert source == "roots"
+
+
+async def test_resolve_workspace_falls_back_to_cwd(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    path, err, source = await _resolve_workspace(None, _FakeRoots(raises=True))
+    assert err is None
+    assert path == str(tmp_path)
+    assert source == "cwd"
+
+
+async def test_resolve_workspace_rejects_nonexistent_param():
+    path, err, source = await _resolve_workspace("/no/such/dir/xyz", _FakeRoots())
+    assert path is None
+    assert err == "invalid_workspace_root"
+
+
+async def test_resolve_workspace_rejects_relative_param(tmp_path, monkeypatch):
+    # A relative workspace_root must be rejected — it would resolve against the
+    # untrusted cwd that workspace resolution exists to bypass.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "sub").mkdir()
+    path, err, source = await _resolve_workspace("sub", _FakeRoots())
+    assert path is None
+    assert err == "invalid_workspace_root"
 
 
 async def _tools_by_name():
@@ -231,6 +298,34 @@ async def test_paid_tools_declare_cost_safety_hints():
         assert ann.readOnlyHint is True, name
         assert ann.destructiveHint is False, name
         assert ann.idempotentHint is False, name
+
+
+async def test_review_uses_workspace_root_over_cwd(fake_claude, monkeypatch, git_repo, tmp_path):
+    # F1: with cwd pointed at an unrelated (non-repo) dir, an explicit
+    # workspace_root makes the review target the intended repo.
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    monkeypatch.chdir(other)
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "claude_review_changes",
+            {"scope": "working_tree", "workspace_root": str(git_repo)})
+    data = structured(result)
+    assert data["ok"] is True
+    assert data["meta"]["cwd"] == str(git_repo)
+    assert data["meta"]["workspace_source"] == "param"
+
+
+async def test_review_invalid_workspace_root_is_structured_error(fake_claude):
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "claude_review_changes",
+            {"scope": "working_tree", "workspace_root": "/no/such/dir/xyz"},
+            raise_on_error=False)
+    data = structured(result)
+    assert data["ok"] is False
+    assert data["error"]["code"] == "invalid_workspace_root"
+    assert data["error"]["offending_param"] == "workspace_root"
 
 
 async def test_capabilities_tool_returns_structured_contract():

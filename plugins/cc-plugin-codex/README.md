@@ -53,6 +53,15 @@ Known limitation: in `claude 2.1.161` there is no OAuth-preserving way to fully 
 `toolless` (default) sends Claude the diff as text; `readonly` lets Claude use `Read,Grep,Glob`
 to pull extra context. Claude never gets write or Bash tools.
 
+## Workspace
+
+The diff-bearing tools operate on a workspace resolved in this order: an explicit
+`workspace_root` argument, then the client's first MCP root, then the server's own
+working directory.
+`meta.workspace_source` reports which rule applied.
+Pass `workspace_root` explicitly when launching the server from a fixed directory (e.g. a
+plugin install) so reviews target your project rather than the plugin checkout.
+
 ## Safety
 
 - Read-only: Claude is never given write or Bash tools.
