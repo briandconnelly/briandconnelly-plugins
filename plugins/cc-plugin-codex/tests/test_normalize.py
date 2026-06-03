@@ -146,3 +146,13 @@ def test_normalize_parses_next_steps_and_line_end():
     res = normalize_envelope("claude_review_changes", _env(inner), _meta(), detail="summary")
     assert res["next_steps"] == ["add a regression test", "revert the change"]
     assert res["findings"][0]["line_end"] == 14
+
+
+def test_normalize_reports_cost_on_error_envelope():
+    # A failed paid call still cost money — cost/usage must ride on the error meta.
+    env = _env("", is_error=True, subtype="success", result="Rate limited; try later.",
+               total_cost_usd=0.004, usage={"input_tokens": 20, "output_tokens": 0})
+    res = normalize_envelope("claude_ask", env, _meta(), detail="summary")
+    assert res["ok"] is False
+    assert res["meta"]["cost_usd"] == 0.004
+    assert res["meta"]["usage"]["input_tokens"] == 20
