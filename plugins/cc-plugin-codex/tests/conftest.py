@@ -43,7 +43,9 @@ def fake_claude(monkeypatch):
              "questions": [], "assumptions": []}
     envelope = json.dumps({"type": "result", "subtype": "success", "is_error": False,
                            "result": json.dumps(inner), "session_id": "sess-1",
-                           "modelUsage": {"claude-sonnet-4-6": {}}})
+                           "modelUsage": {"claude-sonnet-4-6": {}},
+                           "total_cost_usd": 0.0123,
+                           "usage": {"input_tokens": 100, "output_tokens": 50}})
 
     def fake_run(cmd, cwd, timeout_seconds):
         return ClaudeRun(stdout=envelope, stderr="", exit_code=0,

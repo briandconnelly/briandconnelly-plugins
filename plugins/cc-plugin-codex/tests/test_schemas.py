@@ -4,6 +4,39 @@ from cc_plugin_codex.schemas import (
 )
 
 
+def test_usage_model_is_closed_and_optional():
+    from cc_plugin_codex.schemas import Usage
+    u = Usage()  # all fields optional
+    assert u.input_tokens is None
+    assert Usage.model_json_schema().get("additionalProperties") is False
+
+
+def test_meta_carries_cost_and_usage_fields():
+    from cc_plugin_codex.schemas import Meta, Usage
+    m = Meta(cwd="/x", config_mode="inherit", access="toolless",
+             timeout_seconds=10, elapsed_ms=1,
+             cost_usd=0.5, usage=Usage(input_tokens=3, output_tokens=4))
+    dumped = m.model_dump(mode="json", exclude_none=True)
+    assert dumped["cost_usd"] == 0.5
+    assert dumped["usage"]["input_tokens"] == 3
+
+
+def test_finding_supports_line_range():
+    from cc_plugin_codex.schemas import Finding
+    f = Finding(severity="low", title="t", evidence="e", risk="r",
+                recommendation="rec", line=10, line_end=14)
+    assert f.line == 10 and f.line_end == 14
+
+
+def test_success_result_has_next_steps():
+    from cc_plugin_codex.schemas import SuccessResult, Meta
+    r = SuccessResult(tool="claude_ask", summary="s", verdict="pass",
+                      confidence="high", next_steps=["do x"],
+                      meta=Meta(cwd="/x", config_mode="inherit", access="toolless",
+                                timeout_seconds=10, elapsed_ms=1))
+    assert r.next_steps == ["do x"]
+
+
 def test_fingerprint_value():
     assert FINGERPRINT == "cc-plugin-codex/0.1/schema-3"
 

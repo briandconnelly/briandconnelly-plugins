@@ -7,15 +7,24 @@ import re
 from typing import Any, Optional
 
 from cc_plugin_codex.schemas import (
-    ContextSummary, ErrorInfo, ErrorResult, Finding, Meta, RawResponse, SuccessResult,
+    ContextSummary,
+    ErrorInfo,
+    ErrorResult,
+    Finding,
+    Meta,
+    RawResponse,
+    SuccessResult,
+    Usage,
 )
 
 _SCHEMA_INSTRUCTION = (
     "Respond with ONLY a single JSON object (no prose, no code fence) with keys: "
     '"summary" (string), "verdict" (one of pass|concerns|fail|unknown), '
     '"confidence" (one of low|medium|high), "findings" (array of objects with '
-    'severity[critical|high|medium|low|nit], title, file, line, evidence, risk, '
-    'recommendation), "questions" (array of strings), "assumptions" (array of strings).'
+    'severity[critical|high|medium|low|nit], title, file, line, line_end (optional '
+    'end line for multi-line findings), evidence, risk, recommendation), '
+    '"questions" (array of strings), "assumptions" (array of strings), '
+    '"next_steps" (array of strings: concrete actions to take next).'
 )
 
 _LEAD = {
@@ -84,11 +93,13 @@ def _clean_findings(raw: Any) -> list[Finding]:
         if not all(f.get(k) for k in ("title", "evidence", "risk", "recommendation")):
             continue  # drop incomplete findings rather than fabricate fields
         line = f.get("line")
+        line_end = f.get("line_end")
         findings.append(Finding(
             severity=_clamp(f.get("severity"), _VALID_SEVERITY, "low"),
             title=str(f["title"]),
             file=str(f["file"]) if f.get("file") else None,
             line=line if isinstance(line, int) else None,
+            line_end=line_end if isinstance(line_end, int) else None,
             evidence=str(f["evidence"]),
             risk=str(f["risk"]),
             recommendation=str(f["recommendation"]),
@@ -100,21 +111,48 @@ def _error(info: ErrorInfo, meta: Meta) -> dict:
     return ErrorResult(error=info, meta=meta).model_dump(mode="json", exclude_none=True)
 
 
-def normalize_envelope(tool: str, stdout: str, meta: Meta, detail: str,
-                       context_summary: ContextSummary | None = None) -> dict:
+def normalize_envelope(
+    tool: str,
+    stdout: str,
+    meta: Meta,
+    detail: str,
+    context_summary: ContextSummary | None = None,
+) -> dict:
     try:
         env = json.loads(stdout)
     except json.JSONDecodeError:
-        return _error(ErrorInfo(code="invalid_json",
-                      message="claude did not return valid JSON.",
-                      repair="Retry; if it persists, reduce context size."), meta)
+        return _error(
+            ErrorInfo(
+                code="invalid_json",
+                message="claude did not return valid JSON.",
+                repair="Retry; if it persists, reduce context size.",
+            ),
+            meta,
+        )
+
+    # Plumb cost and usage onto meta regardless of success/error path.
+    cost = env.get("total_cost_usd")
+    if isinstance(cost, (int, float)):
+        meta.cost_usd = float(cost)
+    raw_usage = env.get("usage")
+    if isinstance(raw_usage, dict):
+        meta.usage = Usage(
+            input_tokens=raw_usage.get("input_tokens"),
+            output_tokens=raw_usage.get("output_tokens"),
+            cache_read_input_tokens=raw_usage.get("cache_read_input_tokens"),
+            cache_creation_input_tokens=raw_usage.get("cache_creation_input_tokens"),
+        )
 
     if env.get("is_error") or env.get("subtype") not in (None, "success"):
         detail = (env.get("result") or "").strip() or (env.get("subtype") or "unknown error")
-        return _error(ErrorInfo(code="nonzero_exit",
-                      message=f"claude reported an error: {detail[:200]}",
-                      repair="Inspect the error; retry with a smaller or corrected request."),
-                      meta)
+        return _error(
+            ErrorInfo(
+                code="nonzero_exit",
+                message=f"claude reported an error: {detail[:200]}",
+                repair="Inspect the error; retry with a smaller or corrected request.",
+            ),
+            meta,
+        )
 
     text = env.get("result", "") or ""
     raw = RawResponse(
@@ -127,16 +165,25 @@ def normalize_envelope(tool: str, stdout: str, meta: Meta, detail: str,
     # If Claude was blocked by denied tools AND produced nothing usable, surface it.
     denials = env.get("permission_denials") or []
     if denials and (inner is None and not text.strip()):
-        return _error(ErrorInfo(code="claude_permission_error",
-                      message=f"claude was denied required tools: {str(denials)[:160]}",
-                      repair="Use access=toolless, or allow the needed read-only tools.",
-                      ), meta)
+        return _error(
+            ErrorInfo(
+                code="claude_permission_error",
+                message=f"claude was denied required tools: {str(denials)[:160]}",
+                repair="Use access=toolless, or allow the needed read-only tools.",
+            ),
+            meta,
+        )
 
     if inner is None:
-        result = SuccessResult(tool=tool, summary=text.strip()[:500] or "(no content)",
-                               verdict="unknown", confidence="low", raw_response=raw,
-                               context_summary=context_summary if detail == "full" else None,
-                               meta=meta)
+        result = SuccessResult(
+            tool=tool,
+            summary=text.strip()[:500] or "(no content)",
+            verdict="unknown",
+            confidence="low",
+            raw_response=raw,
+            context_summary=context_summary if detail == "full" else None,
+            meta=meta,
+        )
         if denials:
             result.meta.permission_denials = denials
         return result.model_dump(mode="json", exclude_none=True)
@@ -149,6 +196,7 @@ def normalize_envelope(tool: str, stdout: str, meta: Meta, detail: str,
         findings=_clean_findings(inner.get("findings", [])),
         questions=_str_list(inner.get("questions")),
         assumptions=_str_list(inner.get("assumptions")),
+        next_steps=_str_list(inner.get("next_steps")),
         raw_response=raw,
         context_summary=context_summary if detail == "full" else None,
         meta=meta,

@@ -123,3 +123,26 @@ def test_normalize_string_questions_not_exploded():
              "findings": [], "questions": "not a list", "assumptions": []}
     res = normalize_envelope("claude_ask", _env(inner), _meta(), detail="summary")
     assert res["questions"] == []  # a stray string is ignored, not split into chars
+
+
+def test_normalize_surfaces_cost_and_usage():
+    inner = {"summary": "ok", "verdict": "pass", "confidence": "high",
+             "findings": [], "questions": [], "assumptions": []}
+    res = normalize_envelope("claude_ask",
+                             _env(inner, total_cost_usd=0.0123,
+                                  usage={"input_tokens": 100, "output_tokens": 50}),
+                             _meta(), detail="summary")
+    assert res["meta"]["cost_usd"] == 0.0123
+    assert res["meta"]["usage"]["input_tokens"] == 100
+    assert res["meta"]["usage"]["output_tokens"] == 50
+
+
+def test_normalize_parses_next_steps_and_line_end():
+    inner = {"summary": "ok", "verdict": "concerns", "confidence": "medium",
+             "next_steps": ["add a regression test", "revert the change"],
+             "findings": [{"severity": "high", "title": "t", "evidence": "e",
+                           "risk": "r", "recommendation": "rec",
+                           "line": 10, "line_end": 14}]}
+    res = normalize_envelope("claude_review_changes", _env(inner), _meta(), detail="summary")
+    assert res["next_steps"] == ["add a regression test", "revert the change"]
+    assert res["findings"][0]["line_end"] == 14

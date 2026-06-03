@@ -29,12 +29,21 @@ ErrorCode = Literal[
 ]
 
 
+class Usage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    cache_read_input_tokens: Optional[int] = None
+    cache_creation_input_tokens: Optional[int] = None
+
+
 class Finding(BaseModel):
     model_config = ConfigDict(extra="forbid")
     severity: Severity
     title: str
     file: Optional[str] = None
     line: Optional[int] = None
+    line_end: Optional[int] = None   # end line when the finding spans a range (line = start)
     evidence: str
     risk: str
     recommendation: str
@@ -68,6 +77,8 @@ class Meta(BaseModel):
     truncation_hint: Optional[str] = None
     command_exit_code: Optional[int] = None
     permission_denials: Optional[list] = None
+    cost_usd: Optional[float] = None
+    usage: Optional[Usage] = None
     request_id: str = Field(default_factory=lambda: uuid4().hex)
     fingerprint: str = FINGERPRINT
 
@@ -82,6 +93,7 @@ class SuccessResult(BaseModel):
     findings: list[Finding] = Field(default_factory=list)
     questions: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
+    next_steps: list[str] = Field(default_factory=list)
     raw_response: RawResponse = Field(default_factory=RawResponse)
     context_summary: Optional[ContextSummary] = None
     meta: Meta
