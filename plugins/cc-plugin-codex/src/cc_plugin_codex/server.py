@@ -48,7 +48,9 @@ CAPABILITY_SUMMARY = (
     "Prerequisite: the `claude` CLI installed and authenticated; config_mode=bare "
     "additionally requires ANTHROPIC_API_KEY. "
     "Note: in claude 2.1.161 there is no OAuth-preserving way to fully strip "
-    "CLAUDE.md/memory — full config independence (config_mode=bare) requires an API key."
+    "CLAUDE.md/memory — full config independence (config_mode=bare) requires an API key. "
+    "Invalid enum-typed arguments are rejected as schema validation errors before "
+    "a tool runs (not via the ok:false envelope). "
 )
 
 mcp = FastMCP(name="cc-plugin-codex", instructions=CAPABILITY_SUMMARY)
@@ -157,7 +159,10 @@ def claude_ask(
     Use for a free-form question where you want a fresh, evidence-based view.
     Example: claude_ask(prompt="Is optimistic locking safe for this counter?").
     Paid + sends your prompt to Anthropic. Read-only. Blocks up to timeout_seconds
-    and cannot be cancelled once started. Errors come back as
+    and cannot be cancelled once started. Invalid values for typed enum params
+    (config_mode, access, scope, detail) are rejected by the framework as a schema
+    validation error BEFORE the tool runs and do NOT use the ok:false envelope; all
+    other failures return ok:false. Errors come back as
     {"ok": false, "error": {code, message, repair}} with is_error set — branch on
     `ok`. Possible error codes: unsupported_config_mode, unsupported_access,
     api_key_required, claude_not_found, claude_auth_required, claude_permission_error,
@@ -189,12 +194,14 @@ def claude_review_changes(
     scope: working_tree (unstaged), staged, or branch (diff base...HEAD).
     Example: claude_review_changes(scope="working_tree", focus="security").
     The server gathers the diff itself (Claude gets no shell). Paid + read-only.
-    Blocks up to timeout_seconds and cannot be cancelled once started. Branch on
-    `ok` (is_error is set on failure); error codes: unsupported_config_mode,
-    unsupported_access, api_key_required, invalid_scope, invalid_base,
-    context_too_large, claude_not_found, claude_auth_required,
-    claude_permission_error, timeout, budget_exceeded, nonzero_exit,
-    invalid_json, internal_error.
+    Blocks up to timeout_seconds and cannot be cancelled once started. Invalid values
+    for typed enum params (config_mode, access, scope, detail) are rejected by the
+    framework as a schema validation error BEFORE the tool runs and do NOT use the
+    ok:false envelope; all other failures return ok:false. Branch on `ok` (is_error
+    is set on failure); error codes: unsupported_config_mode, unsupported_access,
+    api_key_required, invalid_scope, invalid_base, context_too_large,
+    claude_not_found, claude_auth_required, claude_permission_error, timeout,
+    budget_exceeded, nonzero_exit, invalid_json, internal_error.
     """
     cwd = os.getcwd()
     # Validate options BEFORE touching git, so bad config isn't masked by git errors.
@@ -244,9 +251,12 @@ def claude_adversarial_review(
 
     Example: claude_adversarial_review(target="We can skip locking; writes are rare.").
     Optionally attach a diff via scope. Paid + read-only. Blocks up to
-    timeout_seconds and cannot be cancelled once started. Branch on `ok`
-    (is_error is set on failure). Attaching a scope adds invalid_scope,
-    invalid_base, and context_too_large to the possible error codes.
+    timeout_seconds and cannot be cancelled once started. Invalid values for typed
+    enum params (config_mode, access, scope, detail) are rejected by the framework
+    as a schema validation error BEFORE the tool runs and do NOT use the ok:false
+    envelope; all other failures return ok:false. Branch on `ok` (is_error is set
+    on failure). Attaching a scope adds invalid_scope, invalid_base, and
+    context_too_large to the possible error codes.
     """
     cwd = os.getcwd()
     r, err = _resolve(config_mode, access, model, max_budget_usd, timeout_seconds,

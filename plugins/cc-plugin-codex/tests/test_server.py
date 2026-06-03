@@ -198,6 +198,15 @@ async def test_adversarial_invalid_scope_param_rejected_by_schema(fake_claude, m
     assert "working_tree" in str(exc.value)
 
 
+async def test_paid_docstrings_note_schema_validation_class(fake_claude):
+    # F2: docstrings must disclose that invalid enum values are rejected by the
+    # framework (a validation error), separate from the ok:false envelope.
+    tools = await _tools_by_name()
+    for name in PAID_TOOLS:
+        desc = tools[name].description.lower()
+        assert "schema" in desc or "validation error" in desc, name
+
+
 async def test_adversarial_bad_base_ref_is_structured_error(fake_claude, monkeypatch, git_repo):
     # A malformed base ref must report invalid_base (not invalid_scope) so the
     # agent repairs the right parameter.

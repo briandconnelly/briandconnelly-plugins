@@ -14,6 +14,9 @@ Each tool publishes an output schema describing the `ok`-discriminated result
 on failure). Failures also set the MCP `isError` flag, so branch on either `ok` or
 `isError`. The surface is **experimental / pre-1.0**; clients should pin
 `meta.fingerprint` to detect schema changes.
+Invalid values for enum-typed parameters (`config_mode`, `access`, `scope`, `detail`)
+are rejected by the MCP framework as a schema validation error before the tool runs,
+rather than via the `ok:false` envelope; every other failure uses the envelope.
 
 The paid tools (`claude_ask`, `claude_review_changes`, `claude_adversarial_review`)
 **block synchronously** for up to `timeout_seconds` (default 180s, max 600s) and
