@@ -53,6 +53,91 @@ def _err(code: str, message: str, repair: str, meta: Meta,
     ).model_dump(mode="json", exclude_none=True)
 
 
+@dataclass
+class Resolved:
+    config_mode: str
+    access: str
+    model: Optional[str]
+    budget: float
+    timeout: int
+    detail: str
+
+
+def _resolve(config_mode, access, model, max_budget_usd, timeout_seconds, detail,
+             cwd, scope=None, base=None):
+    """Resolve env defaults + clamps and validate. Returns (Resolved, None) or (None, error_dict)."""
+    d = defaults()
+    cm = config_mode or d.config_mode
+    ac = access or d.access
+    mdl = model or d.model
+    budget = clamp_budget(max_budget_usd if max_budget_usd is not None else d.max_budget_usd)
+    timeout = clamp_timeout(timeout_seconds if timeout_seconds is not None else d.timeout_seconds)
+    det = detail if detail in ("summary", "full") else "summary"
+
+    # Validate before building Meta (Meta uses Literal types — invalid values
+    # would raise Pydantic errors before we can return a structured response).
+    if cm not in ("inherit", "scoped", "bare"):
+        safe_meta = _meta(cwd, "inherit", ac if ac in ("toolless", "readonly") else "toolless",
+                          timeout, 0, None, scope, base)
+        return None, _err("unsupported_config_mode", f"Unknown config_mode '{cm}'.",
+                          "Use one of: inherit, scoped, bare.", safe_meta,
+                          offending="config_mode")
+    if ac not in ("toolless", "readonly"):
+        safe_meta = _meta(cwd, cm, "toolless", timeout, 0, None, scope, base)
+        return None, _err("unsupported_access", f"Unknown access '{ac}'.",
+                          "Use one of: toolless, readonly.", safe_meta, offending="access")
+
+    meta = _meta(cwd, cm, ac, timeout, 0, None, scope, base)
+    if cm == "bare" and not bare_available():
+        return None, _err("api_key_required",
+                          "config_mode=bare requires ANTHROPIC_API_KEY, which is unset.",
+                          "Set ANTHROPIC_API_KEY, or use config_mode inherit/scoped.",
+                          meta, offending="config_mode")
+    return Resolved(cm, ac, mdl, budget, timeout, det), None
+
+
+def _execute(tool, payload, r: Resolved, cwd, resume_session,
+             scope=None, base=None, context_text="", context_summary=None) -> dict:
+    prompt = build_prompt(tool, payload, context_text)
+    cmd = build_command(prompt, r.config_mode, r.access, r.model, r.budget, resume_session)
+    run = run_claude(cmd, cwd=cwd, timeout_seconds=r.timeout)
+    meta = _meta(cwd, r.config_mode, r.access, r.timeout, run.elapsed_ms, run.exit_code,
+                 scope, base)
+    if run.exit_code != 0 or run.timed_out:
+        info = classify_failure(run)
+        return _err(info.code, info.message, info.repair, meta, retryable=info.retryable)
+    return normalize_envelope(tool, run.stdout, meta, detail=r.detail,
+                              context_summary=context_summary)
+
+
+@mcp.tool(annotations=_ANNOTATIONS)
+def claude_ask(
+    prompt: Annotated[str, Field(description="The question to ask Claude.")],
+    context: Annotated[Optional[str], Field(description="Extra context, passed verbatim.")] = None,
+    config_mode: Annotated[Optional[str], Field(description="inherit|scoped|bare")] = None,
+    access: Annotated[Optional[str], Field(description="toolless|readonly")] = None,
+    model: Optional[str] = None,
+    max_budget_usd: Optional[float] = None,
+    timeout_seconds: Optional[int] = None,
+    detail: Annotated[str, Field(description="summary|full")] = "summary",
+    resume_session: Optional[str] = None,
+) -> dict:
+    """Ask Claude for an independent second opinion or recommendation.
+
+    Use for a free-form question where you want a fresh, evidence-based view.
+    Example: claude_ask(prompt="Is optimistic locking safe for this counter?").
+    Paid + sends your prompt to Anthropic. Read-only. Errors come back as
+    {"ok": false, "error": {code, message, repair}} — branch on `ok`.
+    """
+    cwd = os.getcwd()
+    r, err = _resolve(config_mode, access, model, max_budget_usd, timeout_seconds,
+                      detail, cwd)
+    if err:
+        return err
+    return _execute("claude_ask", {"prompt": prompt, "context": context}, r, cwd,
+                    resume_session)
+
+
 @mcp.tool(annotations=_ANNOTATIONS)
 def claude_status() -> dict:
     """Report whether `claude` is installed/usable and which config modes are available.
