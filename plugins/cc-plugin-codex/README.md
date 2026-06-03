@@ -37,10 +37,15 @@ agent can track actual spend across calls.
 - `uv` for running the server.
 - `config_mode=bare` additionally requires `ANTHROPIC_API_KEY`.
 
-## Install (local dev)
+## Install
+
+Install from the `briandconnelly-plugins` Codex marketplace.
+The bundled MCP config runs the server with `uvx` from this repository's
+`plugins/cc-plugin-codex` subdirectory.
+
+## Local dev
 
 This v1 runs from the local checkout (not yet published to PyPI).
-Point Codex at the server via `.mcp.json` using an absolute path (see that file), or:
 `codex mcp add cc-plugin-codex -- uv run --directory "$(pwd)" cc-plugin-codex-mcp`
 
 ## Config modes (`config_mode`)
