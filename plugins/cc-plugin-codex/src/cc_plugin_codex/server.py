@@ -14,7 +14,7 @@ from fastmcp import Context, FastMCP
 from fastmcp.tools.tool import ToolResult
 from pydantic import Field
 
-from cc_plugin_codex.claude import build_command, classify_failure, run_claude
+from cc_plugin_codex.claude import build_command, classify_failure, run_claude_async
 from cc_plugin_codex.config import (
     MAX_BUDGET_USD, MAX_TIMEOUT_SECONDS, MIN_BUDGET_USD, MIN_TIMEOUT_SECONDS,
     bare_available, clamp_budget, clamp_timeout, defaults,
@@ -45,9 +45,9 @@ CAPABILITY_SUMMARY = (
     "It does NOT edit code, run arbitrary shell, act as a general Claude chat, or "
     "proxy Claude's own MCP tools. "
     "Each call is PAID and sends code to Anthropic. The paid tools BLOCK "
-    "synchronously for up to timeout_seconds (default 180s, max 600s) and CANNOT be "
-    "cancelled or resumed once started; narrow the scope or lower timeout_seconds to "
-    "bound a call. "
+    "synchronously for up to timeout_seconds (default 180s, max 600s), but CAN be "
+    "cancelled by the client (which terminates the underlying Claude process) and "
+    "cannot be resumed; narrow the scope or lower timeout_seconds to bound a call. "
     "Prerequisite: the `claude` CLI installed and authenticated; config_mode=bare "
     "additionally requires ANTHROPIC_API_KEY. "
     "Note: in claude 2.1.161 there is no OAuth-preserving way to fully strip "
@@ -186,12 +186,12 @@ def _resolve(config_mode, access, model, max_budget_usd, timeout_seconds, detail
     return Resolved(cm, ac, mdl, budget, timeout, det), None
 
 
-def _execute(tool, payload, r: Resolved, cwd,
-             scope=None, base=None, context_text="", context_summary=None,
-             workspace_source=None) -> dict:
+async def _execute(tool, payload, r: Resolved, cwd,
+                   scope=None, base=None, context_text="", context_summary=None,
+                   workspace_source=None) -> dict:
     prompt = build_prompt(tool, payload, context_text)
     cmd = build_command(prompt, r.config_mode, r.access, r.model, r.budget)
-    run = run_claude(cmd, cwd=cwd, timeout_seconds=r.timeout)
+    run = await run_claude_async(cmd, cwd=cwd, timeout_seconds=r.timeout)
     meta = _meta(cwd, r.config_mode, r.access, r.timeout, run.elapsed_ms, run.exit_code,
                  scope, base, workspace_source=workspace_source)
     if run.exit_code != 0 or run.timed_out:
@@ -221,8 +221,9 @@ async def claude_ask(
 
     Use for a free-form question where you want a fresh, evidence-based view.
     Example: claude_ask(prompt="Is optimistic locking safe for this counter?").
-    Paid + sends your prompt to Anthropic. Read-only. Blocks up to timeout_seconds
-    and cannot be cancelled once started. Invalid values for typed enum params
+    Paid + sends your prompt to Anthropic. Read-only. Blocks up to timeout_seconds;
+    can be cancelled by the client (terminates the Claude process), not resumed.
+    Invalid values for typed enum params
     (config_mode, access, scope, detail) are rejected by the framework as a schema
     validation error BEFORE the tool runs and do NOT use the ok:false envelope; all
     other failures return ok:false. Errors come back as
@@ -248,8 +249,7 @@ async def claude_ask(
     if err:
         return _result(err)
     payload = {"prompt": prompt, "context": context}
-    out = await anyio.to_thread.run_sync(
-        lambda: _execute("claude_ask", payload, r, cwd, workspace_source=ws_source))
+    out = await _execute("claude_ask", payload, r, cwd, workspace_source=ws_source)
     return _result(out)
 
 
@@ -275,7 +275,8 @@ async def claude_review_changes(
     scope: working_tree (unstaged), staged, or branch (diff base...HEAD).
     Example: claude_review_changes(scope="working_tree", focus="security").
     The server gathers the diff itself (Claude gets no shell). Paid + read-only.
-    Blocks up to timeout_seconds and cannot be cancelled once started. Invalid values
+    Blocks up to timeout_seconds; can be cancelled by the client (terminates the
+    Claude process), not resumed. Invalid values
     for typed enum params (config_mode, access, scope, detail) are rejected by the
     framework as a schema validation error BEFORE the tool runs and do NOT use the
     ok:false envelope; all other failures return ok:false. Branch on `ok` (is_error
@@ -321,10 +322,10 @@ async def claude_review_changes(
                      truncated=True, hint=ctx_data.truncation_hint, workspace_source=ws_source)
         return _result(_err("context_too_large", "The diff is too large to review safely.",
                        ctx_data.truncation_hint or "Narrow the scope.", meta))
-    out = await anyio.to_thread.run_sync(lambda: _execute(
+    out = await _execute(
         "claude_review_changes", {"scope": scope, "base": base, "focus": focus},
         r, cwd, scope=scope, base=base, context_text=ctx_data.text,
-        context_summary=ctx_data.summary, workspace_source=ws_source))
+        context_summary=ctx_data.summary, workspace_source=ws_source)
     return _result(out)
 
 
@@ -350,7 +351,8 @@ async def claude_adversarial_review(
 
     Example: claude_adversarial_review(target="We can skip locking; writes are rare.").
     Optionally attach a diff via scope. Paid + read-only. Blocks up to
-    timeout_seconds and cannot be cancelled once started. Invalid values for typed
+    timeout_seconds; can be cancelled by the client (terminates the Claude process),
+    not resumed. Invalid values for typed
     enum params (config_mode, access, scope, detail) are rejected by the framework
     as a schema validation error BEFORE the tool runs and do NOT use the ok:false
     envelope; all other failures return ok:false. Branch on `ok` (is_error is set
@@ -399,10 +401,10 @@ async def claude_adversarial_review(
                            "The attached diff is too large to review safely.",
                            ctx_data.truncation_hint or "Narrow the scope.", meta))
         context_text, context_summary = ctx_data.text, ctx_data.summary
-    out = await anyio.to_thread.run_sync(lambda: _execute(
+    out = await _execute(
         "claude_adversarial_review", {"target": target, "evidence": evidence},
         r, cwd, scope=scope, base=base, context_text=context_text,
-        context_summary=context_summary, workspace_source=ws_source))
+        context_summary=context_summary, workspace_source=ws_source)
     return _result(out)
 
 
@@ -476,7 +478,7 @@ def cc_codex_capabilities() -> ToolResult:
             "does NOT edit code or run shell",
             "does NOT act as a general Claude chat",
             "does NOT proxy Claude's own MCP tools",
-            "does NOT cancel or resume a call once started",
+            "does NOT resume a call once it ends or is cancelled",
         ],
         prerequisites=[
             "the `claude` CLI installed and authenticated",

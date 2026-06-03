@@ -1,4 +1,38 @@
-from cc_plugin_codex.claude import build_command, classify_failure, ClaudeRun
+import anyio
+
+from cc_plugin_codex.claude import (
+    build_command, classify_failure, run_claude_async, ClaudeRun,
+)
+
+
+async def test_run_claude_async_returns_output():
+    run = await run_claude_async(["sh", "-c", "printf hi"], cwd=".", timeout_seconds=10)
+    assert run.exit_code == 0
+    assert run.stdout == "hi"
+    assert run.timed_out is False
+
+
+async def test_run_claude_async_times_out_and_kills(tmp_path):
+    marker = tmp_path / "marker"
+    cmd = ["sh", "-c", f"sleep 5; touch {marker}"]
+    run = await run_claude_async(cmd, cwd=".", timeout_seconds=1)
+    assert run.timed_out is True
+    assert run.exit_code == -9
+    await anyio.sleep(0.3)
+    assert not marker.exists()  # the slept command was killed before touching marker
+
+
+async def test_run_claude_async_cancellation_kills_process(tmp_path):
+    marker = tmp_path / "marker"
+    cmd = ["sh", "-c", f"sleep 5; touch {marker}"]
+    async with anyio.create_task_group() as tg:
+        async def _call():
+            await run_claude_async(cmd, cwd=".", timeout_seconds=30)
+        tg.start_soon(_call)
+        await anyio.sleep(0.3)        # let the subprocess spawn
+        tg.cancel_scope.cancel()      # simulate an MCP client cancellation
+    await anyio.sleep(0.3)
+    assert not marker.exists()        # cancellation terminated the process tree
 
 
 def test_build_command_toolless_inherit():

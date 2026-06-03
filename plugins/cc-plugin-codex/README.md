@@ -19,8 +19,9 @@ are rejected by the MCP framework as a schema validation error before the tool r
 rather than via the `ok:false` envelope; every other failure uses the envelope.
 
 The paid tools (`claude_ask`, `claude_review_changes`, `claude_adversarial_review`)
-**block synchronously** for up to `timeout_seconds` (default 180s, max 600s) and
-**cannot be cancelled or resumed** once started. Call `claude_status` first — it is
+**block synchronously** for up to `timeout_seconds` (default 180s, max 600s).
+They can be **cancelled** by the client, which terminates the underlying Claude process, but not resumed.
+Call `claude_status` first — it is
 free and reports the resolved defaults (`config_mode`, `access`, `model`, clamped
 `max_budget_usd`/`timeout_seconds`, and the clamp bounds) a no-argument paid call
 would use, so you can predict cost and behavior before spending.

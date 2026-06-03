@@ -32,7 +32,7 @@ def git_repo(tmp_path):
 
 @pytest.fixture
 def fake_claude(monkeypatch):
-    """Replace server.run_claude so tests never invoke the real CLI or incur cost."""
+    """Replace server.run_claude_async so tests never invoke the real CLI or incur cost."""
     import cc_plugin_codex.server as srv
     from cc_plugin_codex.claude import ClaudeRun
 
@@ -47,9 +47,9 @@ def fake_claude(monkeypatch):
                            "total_cost_usd": 0.0123,
                            "usage": {"input_tokens": 100, "output_tokens": 50}})
 
-    def fake_run(cmd, cwd, timeout_seconds):
+    async def fake_run(cmd, cwd, timeout_seconds):
         return ClaudeRun(stdout=envelope, stderr="", exit_code=0,
                          elapsed_ms=12, timed_out=False)
 
-    monkeypatch.setattr(srv, "run_claude", fake_run)
+    monkeypatch.setattr(srv, "run_claude_async", fake_run)
     return envelope
