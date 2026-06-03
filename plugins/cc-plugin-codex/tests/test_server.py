@@ -61,3 +61,32 @@ async def test_env_default_config_mode_used(fake_claude, monkeypatch):
         result = await client.call_tool("claude_ask", {"prompt": "x"})
     data = structured(result)
     assert data["meta"]["config_mode"] == "scoped"  # env default applied (param was None)
+
+
+async def test_review_changes_validates_before_context(fake_claude):
+    # Invalid config_mode must error even though cwd may not be a git repo.
+    async with Client(mcp) as client:
+        result = await client.call_tool("claude_review_changes",
+                                        {"scope": "working_tree", "config_mode": "bogus"})
+    data = structured(result)
+    assert data["ok"] is False
+    assert data["error"]["code"] == "unsupported_config_mode"
+
+
+async def test_review_changes_runs_in_git_repo(fake_claude, monkeypatch, git_repo):
+    monkeypatch.chdir(git_repo)
+    async with Client(mcp) as client:
+        result = await client.call_tool("claude_review_changes", {"scope": "working_tree"})
+    data = structured(result)
+    assert data["ok"] is True
+    assert data["verdict"] == "concerns"
+
+
+async def test_adversarial_invalid_scope_is_structured_error(fake_claude, monkeypatch, git_repo):
+    monkeypatch.chdir(git_repo)
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "claude_adversarial_review", {"target": "skip locking", "scope": "bogus"})
+    data = structured(result)
+    assert data["ok"] is False
+    assert data["error"]["code"] == "invalid_scope"

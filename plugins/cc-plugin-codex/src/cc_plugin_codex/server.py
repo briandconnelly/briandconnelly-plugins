@@ -139,6 +139,97 @@ def claude_ask(
 
 
 @mcp.tool(annotations=_ANNOTATIONS)
+def claude_review_changes(
+    scope: Annotated[str, Field(description="working_tree|staged|branch")],
+    base: Annotated[str, Field(description="Base ref for scope=branch.")] = "main",
+    focus: Annotated[Optional[str], Field(description="e.g. 'security', 'tests'.")] = None,
+    config_mode: Annotated[Optional[str], Field(description="inherit|scoped|bare")] = None,
+    access: Annotated[Optional[str], Field(description="toolless|readonly")] = None,
+    model: Optional[str] = None,
+    max_budget_usd: Optional[float] = None,
+    timeout_seconds: Optional[int] = None,
+    detail: Annotated[str, Field(description="summary|full")] = "summary",
+    resume_session: Optional[str] = None,
+) -> dict:
+    """Have Claude review a git diff for correctness, regressions, security, tests.
+
+    scope: working_tree (unstaged), staged, or branch (diff base...HEAD).
+    Example: claude_review_changes(scope="working_tree", focus="security").
+    The server gathers the diff itself (Claude gets no shell). Paid + read-only.
+    Branch on `ok`; errors include code in {unsupported_config_mode, unsupported_access,
+    api_key_required, invalid_scope, context_too_large, timeout, ...}.
+    """
+    cwd = os.getcwd()
+    # Validate options BEFORE touching git, so bad config isn't masked by git errors.
+    r, err = _resolve(config_mode, access, model, max_budget_usd, timeout_seconds,
+                      detail, cwd, scope=scope, base=base)
+    if err:
+        return err
+    meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base)
+    try:
+        ctx = gather_context(cwd, scope=scope, base=base)
+    except ValueError:
+        return _err("invalid_scope", f"Invalid scope '{scope}'.",
+                    "Use working_tree, staged, or branch.", meta, offending="scope")
+    except RuntimeError as e:
+        return _err("internal_error", f"git failed: {e}",
+                    "Ensure cwd is a git repo and base ref exists.", meta)
+    if ctx.truncated:
+        meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
+                     truncated=True, hint=ctx.truncation_hint)
+        return _err("context_too_large", "The diff is too large to review safely.",
+                    ctx.truncation_hint or "Narrow the scope.", meta)
+    return _execute("claude_review_changes",
+                    {"scope": scope, "base": base, "focus": focus}, r, cwd,
+                    resume_session, scope=scope, base=base,
+                    context_text=ctx.text, context_summary=ctx.summary)
+
+
+@mcp.tool(annotations=_ANNOTATIONS)
+def claude_adversarial_review(
+    target: Annotated[str, Field(description="The plan/claim/decision to attack.")],
+    evidence: Annotated[Optional[str], Field(description="Supporting evidence.")] = None,
+    scope: Annotated[Optional[str], Field(description="Optionally attach a diff: working_tree|staged|branch")] = None,
+    base: str = "main",
+    config_mode: Annotated[Optional[str], Field(description="inherit|scoped|bare")] = None,
+    access: Annotated[Optional[str], Field(description="toolless|readonly")] = None,
+    model: Optional[str] = None,
+    max_budget_usd: Optional[float] = None,
+    timeout_seconds: Optional[int] = None,
+    detail: Annotated[str, Field(description="summary|full")] = "summary",
+    resume_session: Optional[str] = None,
+) -> dict:
+    """Have Claude attack a plan or claim and surface the strongest counterarguments.
+
+    Example: claude_adversarial_review(target="We can skip locking; writes are rare.").
+    Optionally attach a diff via scope. Paid + read-only. Branch on `ok`.
+    """
+    cwd = os.getcwd()
+    r, err = _resolve(config_mode, access, model, max_budget_usd, timeout_seconds,
+                      detail, cwd, scope=scope, base=base)
+    if err:
+        return err
+    context_text = ""
+    context_summary = None
+    if scope:
+        meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base)
+        try:
+            ctx = gather_context(cwd, scope=scope, base=base)
+        except ValueError:
+            return _err("invalid_scope", f"Invalid scope '{scope}'.",
+                        "Use working_tree, staged, or branch (or omit scope).",
+                        meta, offending="scope")
+        except RuntimeError as e:
+            return _err("internal_error", f"git failed: {e}",
+                        "Ensure cwd is a git repo and base ref exists.", meta)
+        context_text, context_summary = ctx.text, ctx.summary
+    return _execute("claude_adversarial_review",
+                    {"target": target, "evidence": evidence}, r, cwd, resume_session,
+                    scope=scope, base=base, context_text=context_text,
+                    context_summary=context_summary)
+
+
+@mcp.tool(annotations=_ANNOTATIONS)
 def claude_status() -> dict:
     """Report whether `claude` is installed/usable and which config modes are available.
 
