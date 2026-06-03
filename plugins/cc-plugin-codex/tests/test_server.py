@@ -158,7 +158,7 @@ async def test_claude_ask_returns_normalized(fake_claude):
     data = structured(result)
     assert data["ok"] is True
     assert data["verdict"] == "concerns"
-    assert data["meta"]["fingerprint"] == "cc-plugin-codex/0.1/schema-3"
+    assert data["meta"]["fingerprint"] == "cc-plugin-codex/0.1/schema-4"
 
 
 async def test_invalid_enum_param_rejected_by_schema(fake_claude):
@@ -334,7 +334,7 @@ async def test_capabilities_tool_returns_structured_contract():
     async with Client(mcp) as client:
         result = await client.call_tool("cc_codex_capabilities", {})
     data = structured(result)
-    assert data["fingerprint"] == "cc-plugin-codex/0.1/schema-3"
+    assert data["fingerprint"] == "cc-plugin-codex/0.1/schema-4"
     assert data["transport"] == "stdio"
     assert set(data["paid_tools"]) == {
         "claude_ask", "claude_review_changes", "claude_adversarial_review"}
