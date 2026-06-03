@@ -22,7 +22,8 @@ from cc_plugin_codex.context import (
 )
 from cc_plugin_codex.normalize import build_prompt, normalize_envelope
 from cc_plugin_codex.schemas import (
-    FINGERPRINT, RESULT_SCHEMA, STATUS_SCHEMA, Access, ConfigMode, Detail,
+    CAPABILITIES_SCHEMA, FINGERPRINT, RESULT_SCHEMA, STATUS_SCHEMA,
+    Access, CapabilitiesResult, ConfigMode, Detail,
     ErrorInfo, ErrorResult, Meta, ResolvedDefaults, Scope, StatusResult,
 )
 
@@ -344,6 +345,45 @@ def claude_status() -> ToolResult:
                 "config_mode=bare needs ANTHROPIC_API_KEY."),
     )
     return _result(status.model_dump(mode="json", exclude_none=True))
+
+
+@mcp.tool(annotations=_STATUS_ANNOTATIONS, title="cc-plugin-codex capabilities",
+          output_schema=CAPABILITIES_SCHEMA)
+def cc_codex_capabilities() -> ToolResult:
+    """Return this server's contract as structured data: tool inventory, modes,
+    scope/negative-scope, prerequisites, and the schema fingerprint.
+
+    Free and read-only (makes no Claude call). Clients that cannot browse MCP
+    resources can read the same contract the cc-plugin-codex://capabilities
+    resource carries as prose. Pin `fingerprint` to detect schema changes.
+    """
+    result = CapabilitiesResult(
+        name="cc-plugin-codex",
+        version="0.1.0",
+        transport="stdio",
+        stability="experimental",
+        paid_tools=["claude_ask", "claude_review_changes", "claude_adversarial_review"],
+        free_tools=["claude_status", "cc_codex_capabilities"],
+        config_modes=["inherit", "scoped", "bare"],
+        access_modes=["toolless", "readonly"],
+        scope=[
+            "independent code review of a git diff",
+            "adversarial review of a plan/claim",
+            "a free-form independent second opinion",
+        ],
+        negative_scope=[
+            "does NOT edit code or run shell",
+            "does NOT act as a general Claude chat",
+            "does NOT proxy Claude's own MCP tools",
+            "does NOT cancel or resume a call once started",
+        ],
+        prerequisites=[
+            "the `claude` CLI installed and authenticated",
+            "git, for the diff-bearing tools",
+            "ANTHROPIC_API_KEY only for config_mode=bare",
+        ],
+    )
+    return _result(result.model_dump(mode="json", exclude_none=True))
 
 
 @mcp.resource("cc-plugin-codex://capabilities")

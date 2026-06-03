@@ -231,3 +231,18 @@ async def test_paid_tools_declare_cost_safety_hints():
         assert ann.readOnlyHint is True, name
         assert ann.destructiveHint is False, name
         assert ann.idempotentHint is False, name
+
+
+async def test_capabilities_tool_returns_structured_contract():
+    # F7: the capability/version contract is available as structured data, not
+    # only as a prose resource.
+    async with Client(mcp) as client:
+        result = await client.call_tool("cc_codex_capabilities", {})
+    data = structured(result)
+    assert data["fingerprint"] == "cc-plugin-codex/0.1/schema-2"
+    assert data["transport"] == "stdio"
+    assert set(data["paid_tools"]) == {
+        "claude_ask", "claude_review_changes", "claude_adversarial_review"}
+    assert "claude_status" in data["free_tools"]
+    assert data["negative_scope"]            # non-empty list of what it won't do
+    assert data["prerequisites"]

@@ -124,6 +124,23 @@ class StatusResult(BaseModel):
     fingerprint: str = FINGERPRINT
 
 
+class CapabilitiesResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ok: Literal[True] = True
+    name: str
+    version: str
+    fingerprint: str = FINGERPRINT
+    transport: str
+    stability: str
+    paid_tools: list[str]
+    free_tools: list[str]
+    config_modes: list[str]
+    access_modes: list[str]
+    scope: list[str]            # what this server is for
+    negative_scope: list[str]   # what it deliberately does NOT do
+    prerequisites: list[str]
+
+
 def _object_union_schema(adapter: TypeAdapter) -> dict:
     """Wrap a model union's anyOf in a top-level object schema.
 
@@ -147,3 +164,4 @@ def _object_union_schema(adapter: TypeAdapter) -> dict:
 # Advertised output schemas (convention: a discriminated ok:true|false union).
 RESULT_SCHEMA = _object_union_schema(TypeAdapter(SuccessResult | ErrorResult))
 STATUS_SCHEMA = StatusResult.model_json_schema()
+CAPABILITIES_SCHEMA = CapabilitiesResult.model_json_schema()
