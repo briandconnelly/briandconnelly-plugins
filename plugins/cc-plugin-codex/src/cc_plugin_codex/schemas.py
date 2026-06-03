@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 # Bump this whenever the agent-visible surface changes: tool names, input or
 # output schemas, the ErrorCode set, the config_mode/access/scope/detail value
 # sets, or the capability guarantees in CAPABILITY_SUMMARY. Clients cache by it.
-FINGERPRINT = "cc-plugin-codex/0.1/schema-5"
+FINGERPRINT = "cc-plugin-codex/0.1/schema-6"
 
 Severity = Literal["critical", "high", "medium", "low", "nit"]
 Verdict = Literal["pass", "concerns", "fail", "unknown"]
@@ -20,6 +20,8 @@ Access = Literal["toolless", "readonly"]
 Scope = Literal["working_tree", "staged", "branch"]
 Detail = Literal["summary", "full"]
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
+# Lifecycle states for a background job. Terminal: done|failed|cancelled|timeout|expired.
+JobState = Literal["running", "done", "failed", "cancelled", "timeout", "expired"]
 
 ErrorCode = Literal[
     "claude_not_found", "claude_auth_required", "api_key_required",
@@ -27,6 +29,8 @@ ErrorCode = Literal[
     "invalid_workspace_root",
     "context_too_large", "timeout", "budget_exceeded", "claude_permission_error",
     "nonzero_exit", "invalid_json", "internal_error",
+    # Background-job lifecycle errors (claude_job_result for a non-done job):
+    "job_not_found", "job_running", "job_cancelled", "job_timeout", "job_failed",
 ]
 
 
@@ -80,6 +84,7 @@ class Meta(BaseModel):
     permission_denials: Optional[list] = None
     cost_usd: Optional[float] = None
     usage: Optional[Usage] = None
+    job_id: Optional[str] = None   # set on background-job results; None for sync calls
     request_id: str = Field(default_factory=lambda: uuid4().hex)
     fingerprint: str = FINGERPRINT
 
@@ -161,6 +166,35 @@ class CapabilitiesResult(BaseModel):
     prerequisites: list[str]
 
 
+class JobStarted(BaseModel):
+    """Returned by the *_async tools: a handle to poll, not a result."""
+    model_config = ConfigDict(extra="forbid")
+    ok: Literal[True] = True
+    job_id: str
+    kind: str                  # the tool the job runs, e.g. claude_review_changes
+    status: JobState = "running"
+    started_at: str            # ISO-8601 UTC
+    deadline_seconds: int      # wall-clock cap after which a poll reaps the job
+    meta: Meta
+    fingerprint: str = FINGERPRINT
+
+
+class JobStatus(BaseModel):
+    """Returned by claude_job_status: lifecycle state without the full result."""
+    model_config = ConfigDict(extra="forbid")
+    ok: Literal[True] = True
+    job_id: str
+    kind: str
+    status: JobState
+    started_at: str
+    elapsed_ms: int
+    deadline_seconds: int
+    result_available: bool = False   # true once status == done
+    cost_usd: Optional[float] = None  # populated for terminal jobs that spent
+    detail: Optional[str] = None      # short human hint (e.g. failure reason)
+    fingerprint: str = FINGERPRINT
+
+
 def _object_union_schema(adapter: TypeAdapter) -> dict:
     """Wrap a model union's anyOf in a top-level object schema.
 
@@ -185,3 +219,7 @@ def _object_union_schema(adapter: TypeAdapter) -> dict:
 RESULT_SCHEMA = _object_union_schema(TypeAdapter(SuccessResult | ErrorResult))
 STATUS_SCHEMA = StatusResult.model_json_schema()
 CAPABILITIES_SCHEMA = CapabilitiesResult.model_json_schema()
+# A failed *_async launch (e.g. context_too_large) returns the error envelope, so
+# the start tools advertise the JobStarted|ErrorResult union.
+JOB_STARTED_SCHEMA = _object_union_schema(TypeAdapter(JobStarted | ErrorResult))
+JOB_STATUS_SCHEMA = _object_union_schema(TypeAdapter(JobStatus | ErrorResult))

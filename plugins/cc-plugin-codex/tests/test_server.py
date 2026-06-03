@@ -1,5 +1,6 @@
 import json
 
+import anyio
 import pytest
 from fastmcp import Client
 
@@ -158,7 +159,7 @@ async def test_claude_ask_returns_normalized(fake_claude):
     data = structured(result)
     assert data["ok"] is True
     assert data["verdict"] == "concerns"
-    assert data["meta"]["fingerprint"] == "cc-plugin-codex/0.1/schema-5"
+    assert data["meta"]["fingerprint"] == "cc-plugin-codex/0.1/schema-6"
 
 
 async def test_invalid_enum_param_rejected_by_schema(fake_claude):
@@ -366,17 +367,76 @@ async def test_review_invalid_workspace_root_is_structured_error(fake_claude):
     assert data["error"]["offending_param"] == "workspace_root"
 
 
+async def test_review_changes_async_lifecycle(monkeypatch, git_repo, tmp_path):
+    # End-to-end through the MCP surface: launch async -> poll status -> get the
+    # same envelope as the sync tool. build_command is replaced with a fake that
+    # writes a known claude envelope, so no real CLI runs.
+    import json as _json
+
+    import cc_plugin_codex.server as srv
+
+    monkeypatch.setenv("CC_PLUGIN_CODEX_STATE_DIR", str(tmp_path / "state"))
+    inner = {"summary": "off-by-one", "verdict": "concerns", "confidence": "high",
+             "findings": [], "questions": [], "assumptions": []}
+    envelope = _json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                            "result": _json.dumps(inner), "total_cost_usd": 0.02,
+                            "usage": {"input_tokens": 5, "output_tokens": 1}})
+    monkeypatch.setattr(srv, "build_command",
+                        lambda *a, **k: ["sh", "-c", "printf '%s' \"$0\"", envelope])
+
+    async with Client(mcp) as client:
+        started = structured(await client.call_tool(
+            "claude_review_changes_async",
+            {"scope": "working_tree", "workspace_root": str(git_repo)}))
+        assert started["ok"] is True
+        assert started["status"] == "running"
+        job_id = started["job_id"]
+
+        import time as _time
+        deadline = _time.time() + 5
+        status = "running"
+        while _time.time() < deadline:
+            st = structured(await client.call_tool(
+                "claude_job_status",
+                {"job_id": job_id, "workspace_root": str(git_repo)}))
+            status = st["status"]
+            if status != "running":
+                break
+            await anyio.sleep(0.05)
+        assert status == "done"
+
+        res = structured(await client.call_tool(
+            "claude_job_result", {"job_id": job_id, "workspace_root": str(git_repo)}))
+    assert res["ok"] is True
+    assert res["verdict"] == "concerns"
+    assert res["meta"]["job_id"] == job_id
+
+
+async def test_job_result_not_found_is_structured_error(tmp_path, monkeypatch, git_repo):
+    monkeypatch.setenv("CC_PLUGIN_CODEX_STATE_DIR", str(tmp_path / "state"))
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "claude_job_result", {"job_id": "deadbeef", "workspace_root": str(git_repo)},
+            raise_on_error=False)
+    data = structured(result)
+    assert data["ok"] is False
+    assert data["error"]["code"] == "job_not_found"
+
+
 async def test_capabilities_tool_returns_structured_contract():
     # F7: the capability/version contract is available as structured data, not
     # only as a prose resource.
     async with Client(mcp) as client:
         result = await client.call_tool("cc_codex_capabilities", {})
     data = structured(result)
-    assert data["fingerprint"] == "cc-plugin-codex/0.1/schema-5"
+    assert data["fingerprint"] == "cc-plugin-codex/0.1/schema-6"
     assert data["transport"] == "stdio"
     assert set(data["paid_tools"]) == {
-        "claude_ask", "claude_review_changes", "claude_adversarial_review"}
+        "claude_ask", "claude_review_changes", "claude_adversarial_review",
+        "claude_review_changes_async"}
     assert "claude_status" in data["free_tools"]
+    for lifecycle in ("claude_job_status", "claude_job_result", "claude_job_cancel"):
+        assert lifecycle in data["free_tools"]
     assert data["negative_scope"]            # non-empty list of what it won't do
     assert data["prerequisites"]
 

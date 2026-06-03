@@ -22,6 +22,7 @@ Do NOT call Claude in a loop, and never call Claude just because Claude suggeste
 
 - `claude_ask` — a free-form second opinion or recommendation.
 - `claude_review_changes` — Claude reviews your git diff (`scope` = working_tree | staged | branch).
+- `claude_review_changes_async` — same review as a background job for large diffs or when you want to keep working; returns a `job_id`. Poll `claude_job_status`, then `claude_job_result` (same envelope as the sync tool); `claude_job_cancel` to stop it.
 - `claude_adversarial_review` — Claude attacks a plan/claim and lists the strongest counterarguments.
 - `claude_status` — free readiness check: reports whether `claude` is installed, authenticated (`claude_authenticated`), version-compatible (`version_supported`), and overall `ready`, plus the resolved defaults a no-arg call would use. Run it first if a call fails, or to confirm readiness before spending.
 
