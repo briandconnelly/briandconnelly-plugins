@@ -11,7 +11,8 @@ from cc_plugin_codex.schemas import ContextSummary
 MAX_DIFF_BYTES = 200_000
 
 SECRET_PATH_RE = re.compile(
-    r"(^|/)(\.env(\.|$)|.*\.pem$|.*\.key$|id_rsa|id_ed25519|.*\.p12$)", re.IGNORECASE
+    r"(^|/)(\.env(\.|$)|.*\.env$|.*\.pem$|.*\.key$|id_rsa|id_ed25519|.*\.p12$)",
+    re.IGNORECASE,
 )
 
 

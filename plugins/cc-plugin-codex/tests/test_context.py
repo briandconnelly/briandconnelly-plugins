@@ -36,3 +36,11 @@ def test_size_cap_truncates(git_repo, monkeypatch):
     res = gather_context(str(git_repo), scope="working_tree", base="main")
     assert res.truncated is True
     assert res.truncation_hint
+
+
+def test_stage_env_file_redacted(git_repo):
+    (git_repo / "prod.env").write_text("DB_PASSWORD=hunter2\n")
+    subprocess.run(["git", "add", "-Nf", "prod.env"], cwd=git_repo, check=True)
+    res = gather_context(str(git_repo), scope="working_tree", base="main")
+    assert "hunter2" not in res.text
+    assert "prod.env" in res.text

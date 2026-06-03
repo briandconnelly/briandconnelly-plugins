@@ -55,3 +55,10 @@ def test_classify_generic_nonzero():
     run = ClaudeRun(stdout="", stderr="something else", exit_code=2,
                     elapsed_ms=5, timed_out=False)
     assert classify_failure(run).code == "nonzero_exit"
+
+
+def test_build_command_separates_prompt_with_double_dash():
+    cmd = build_command(prompt="--model evil", config_mode="inherit", access="toolless",
+                        model=None, max_budget_usd=1.0, resume_session=None)
+    assert cmd[-2] == "--"
+    assert cmd[-1] == "--model evil"  # flag-looking prompt stays a positional

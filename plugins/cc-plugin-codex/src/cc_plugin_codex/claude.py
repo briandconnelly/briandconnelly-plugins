@@ -32,7 +32,7 @@ def build_command(prompt: str, config_mode: str, access: str, model: str | None,
         cmd += ["--model", model]
     if resume_session:
         cmd += ["--resume", resume_session]
-    cmd.append(prompt)  # final positional
+    cmd += ["--", prompt]  # end-of-options separator, then the prompt as positional
     return cmd
 
 

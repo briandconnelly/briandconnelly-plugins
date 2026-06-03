@@ -54,3 +54,18 @@ def test_clamps():
 
 def test_critic_prompt_mentions_independence():
     assert "independent critique" in cfg.INDEPENDENT_CRITIC_PROMPT
+
+
+def test_defaults_malformed_numeric_env_falls_back(monkeypatch):
+    monkeypatch.setenv("CC_PLUGIN_CODEX_MAX_BUDGET_USD", "abc")
+    monkeypatch.setenv("CC_PLUGIN_CODEX_TIMEOUT_SECONDS", "xyz")
+    d = cfg.defaults()
+    assert d.max_budget_usd == 1.00
+    assert d.timeout_seconds == 180
+
+
+def test_readonly_allowlist_has_no_write_tools():
+    ro = cfg.access_flags("readonly")
+    assert ro[1] == "Read,Grep,Glob"  # allowlist contains only read tools
+    for bad in ("Edit", "Write", "NotebookEdit", "Bash"):
+        assert bad not in ro[1]
