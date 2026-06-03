@@ -17,7 +17,9 @@ from cc_plugin_codex.config import (
     MAX_BUDGET_USD, MAX_TIMEOUT_SECONDS, MIN_BUDGET_USD, MIN_TIMEOUT_SECONDS,
     bare_available, clamp_budget, clamp_timeout, defaults,
 )
-from cc_plugin_codex.context import gather_context
+from cc_plugin_codex.context import (
+    InvalidBaseError, InvalidScopeError, gather_context,
+)
 from cc_plugin_codex.normalize import build_prompt, normalize_envelope
 from cc_plugin_codex.schemas import (
     FINGERPRINT, RESULT_SCHEMA, STATUS_SCHEMA, Access, ConfigMode, Detail,
@@ -189,9 +191,10 @@ def claude_review_changes(
     The server gathers the diff itself (Claude gets no shell). Paid + read-only.
     Blocks up to timeout_seconds and cannot be cancelled once started. Branch on
     `ok` (is_error is set on failure); error codes: unsupported_config_mode,
-    unsupported_access, api_key_required, invalid_scope, context_too_large,
-    claude_not_found, claude_auth_required, claude_permission_error, timeout,
-    budget_exceeded, nonzero_exit, invalid_json, internal_error.
+    unsupported_access, api_key_required, invalid_scope, invalid_base,
+    context_too_large, claude_not_found, claude_auth_required,
+    claude_permission_error, timeout, budget_exceeded, nonzero_exit,
+    invalid_json, internal_error.
     """
     cwd = os.getcwd()
     # Validate options BEFORE touching git, so bad config isn't masked by git errors.
@@ -202,7 +205,11 @@ def claude_review_changes(
     meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base)
     try:
         ctx = gather_context(cwd, scope=scope, base=base)
-    except ValueError:
+    except InvalidBaseError:
+        return _result(_err("invalid_base", f"Invalid base ref '{base}'.",
+                       "Use an existing git ref matching [A-Za-z0-9._/-]+ that does "
+                       "not start with '-'.", meta, offending="base"))
+    except InvalidScopeError:
         return _result(_err("invalid_scope", f"Invalid scope '{scope}'.",
                        "Use working_tree, staged, or branch.", meta, offending="scope"))
     except RuntimeError as e:
@@ -238,8 +245,8 @@ def claude_adversarial_review(
     Example: claude_adversarial_review(target="We can skip locking; writes are rare.").
     Optionally attach a diff via scope. Paid + read-only. Blocks up to
     timeout_seconds and cannot be cancelled once started. Branch on `ok`
-    (is_error is set on failure). Attaching a scope adds invalid_scope and
-    context_too_large to the possible error codes.
+    (is_error is set on failure). Attaching a scope adds invalid_scope,
+    invalid_base, and context_too_large to the possible error codes.
     """
     cwd = os.getcwd()
     r, err = _resolve(config_mode, access, model, max_budget_usd, timeout_seconds,
@@ -252,7 +259,11 @@ def claude_adversarial_review(
         meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base)
         try:
             ctx = gather_context(cwd, scope=scope, base=base)
-        except ValueError:
+        except InvalidBaseError:
+            return _result(_err("invalid_base", f"Invalid base ref '{base}'.",
+                           "Use an existing git ref matching [A-Za-z0-9._/-]+ that does "
+                           "not start with '-'.", meta, offending="base"))
+        except InvalidScopeError:
             return _result(_err("invalid_scope", f"Invalid scope '{scope}'.",
                            "Use working_tree, staged, or branch (or omit scope).",
                            meta, offending="scope"))

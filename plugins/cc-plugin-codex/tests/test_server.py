@@ -199,7 +199,8 @@ async def test_adversarial_invalid_scope_param_rejected_by_schema(fake_claude, m
 
 
 async def test_adversarial_bad_base_ref_is_structured_error(fake_claude, monkeypatch, git_repo):
-    # The structured invalid_scope path is still reachable via a malformed base ref.
+    # A malformed base ref must report invalid_base (not invalid_scope) so the
+    # agent repairs the right parameter.
     monkeypatch.chdir(git_repo)
     async with Client(mcp) as client:
         result = await client.call_tool(
@@ -208,4 +209,5 @@ async def test_adversarial_bad_base_ref_is_structured_error(fake_claude, monkeyp
             raise_on_error=False)
     data = structured(result)
     assert data["ok"] is False
-    assert data["error"]["code"] == "invalid_scope"
+    assert data["error"]["code"] == "invalid_base"
+    assert data["error"]["offending_param"] == "base"

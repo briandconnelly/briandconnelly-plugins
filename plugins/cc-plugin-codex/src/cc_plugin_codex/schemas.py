@@ -22,7 +22,8 @@ Detail = Literal["summary", "full"]
 
 ErrorCode = Literal[
     "claude_not_found", "claude_auth_required", "api_key_required",
-    "unsupported_config_mode", "unsupported_access", "invalid_scope",
+    "unsupported_config_mode", "unsupported_access", "invalid_scope", "invalid_base",
+    "invalid_workspace_root",
     "context_too_large", "timeout", "budget_exceeded", "claude_permission_error",
     "nonzero_exit", "invalid_json", "internal_error",
 ]

@@ -13,6 +13,14 @@ MAX_DIFF_BYTES = 200_000
 _REF_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 
 
+class InvalidScopeError(ValueError):
+    """Raised when the requested diff scope is not recognized."""
+
+
+class InvalidBaseError(ValueError):
+    """Raised when the base ref for scope=branch is malformed/unsafe."""
+
+
 def _valid_ref(ref: str) -> bool:
     """A conservative git ref/commit check: no leading dash, no option/shell chars."""
     return bool(ref) and not ref.startswith("-") and bool(_REF_RE.match(ref))
@@ -50,10 +58,10 @@ def _diff_args(scope: str, base: str) -> list[str]:
         return common + ["--cached"]
     if scope == "branch":
         if not _valid_ref(base):
-            raise ValueError(f"invalid base ref: {base!r}")
+            raise InvalidBaseError(f"invalid base ref: {base!r}")
         # --end-of-options ensures the ref can never be parsed as a git option.
         return common + ["--end-of-options", f"{base}...HEAD"]
-    raise ValueError(f"invalid scope: {scope}")
+    raise InvalidScopeError(f"invalid scope: {scope}")
 
 
 def _summary(cwd: str, diff_args: list[str]) -> ContextSummary:
@@ -90,7 +98,7 @@ def _redact(diff: str) -> tuple[str, list[str]]:
 
 
 def gather_context(cwd: str, scope: str, base: str) -> ContextResult:
-    diff_args = _diff_args(scope, base)          # raises ValueError on bad scope
+    diff_args = _diff_args(scope, base)          # raises InvalidScopeError / InvalidBaseError
     summary = _summary(cwd, diff_args)
     raw = _git(cwd, *diff_args)
     text, redacted = _redact(raw)

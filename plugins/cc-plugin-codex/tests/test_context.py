@@ -2,7 +2,9 @@ import subprocess
 
 import pytest
 
-from cc_plugin_codex.context import gather_context, ContextResult
+from cc_plugin_codex.context import (
+    InvalidBaseError, InvalidScopeError, ContextResult, gather_context, _diff_args,
+)
 
 
 def test_working_tree_diff(git_repo):
@@ -60,6 +62,15 @@ def test_pem_file_redacted(git_repo):
 
 
 def test_diff_args_include_no_textconv():
-    from cc_plugin_codex.context import _diff_args
     assert "--no-textconv" in _diff_args("working_tree", "main")
     assert "--no-textconv" in _diff_args("staged", "main")
+
+
+def test_diff_args_bad_base_raises_invalid_base():
+    with pytest.raises(InvalidBaseError):
+        _diff_args("branch", "-badref")
+
+
+def test_diff_args_bad_scope_raises_invalid_scope():
+    with pytest.raises(InvalidScopeError):
+        _diff_args("nonsense", "main")
