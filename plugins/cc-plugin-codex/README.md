@@ -1,7 +1,10 @@
 # cc-plugin-codex
 
 Call Claude Code from Codex for bounded, independent code review and second opinions.
-The mirror image of [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc).
+The mirror image of [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc)'s
+review surface.
+Unlike that plugin, cc-plugin-codex is review-only: it does not delegate write-capable
+tasks or run background jobs.
 
 ## What it does
 
@@ -25,6 +28,8 @@ Call `claude_status` first — it is
 free and reports the resolved defaults (`config_mode`, `access`, `model`, clamped
 `max_budget_usd`/`timeout_seconds`, and the clamp bounds) a no-argument paid call
 would use, so you can predict cost and behavior before spending.
+Every paid result also reports `meta.cost_usd` and `meta.usage` (token counts) so an
+agent can track actual spend across calls.
 
 ## Requirements
 
