@@ -1,5 +1,6 @@
 from cc_plugin_codex.schemas import (
-    FINGERPRINT, Finding, Meta, RawResponse, SuccessResult, ErrorInfo, ErrorResult,
+    FINGERPRINT, RESULT_SCHEMA, Finding, Meta, RawResponse,
+    SuccessResult, ErrorInfo, ErrorResult,
 )
 
 
@@ -47,3 +48,18 @@ def test_meta_carries_request_id():
 def test_error_info_drops_misleading_retry_after_ms():
     # F7: retry_after_ms implied a backoff delay we never compute for budget/timeout.
     assert "retry_after_ms" not in ErrorInfo.model_fields
+
+
+def test_success_result_schema_is_closed():
+    assert SuccessResult.model_json_schema().get("additionalProperties") is False
+
+
+def test_error_result_schema_is_closed():
+    assert ErrorResult.model_json_schema().get("additionalProperties") is False
+
+
+def test_result_schema_defs_are_closed():
+    import json
+    blob = json.dumps(RESULT_SCHEMA)
+    # Nested object models (Finding, Meta, ErrorInfo, ...) carry the closed flag.
+    assert '"additionalProperties": false' in blob

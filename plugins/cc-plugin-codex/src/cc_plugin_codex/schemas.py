@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 # Bump this whenever the agent-visible surface changes: tool names, input or
 # output schemas, the ErrorCode set, the config_mode/access/scope/detail value
@@ -30,6 +30,7 @@ ErrorCode = Literal[
 
 
 class Finding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     severity: Severity
     title: str
     file: Optional[str] = None
@@ -40,18 +41,21 @@ class Finding(BaseModel):
 
 
 class RawResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     text: Optional[str] = None
     session_id: Optional[str] = None
     model: Optional[str] = None
 
 
 class ContextSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     files_changed: int = 0
     lines_added: int = 0
     lines_removed: int = 0
 
 
 class Meta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     cwd: str
     config_mode: ConfigMode
     access: Access
@@ -68,6 +72,7 @@ class Meta(BaseModel):
 
 
 class SuccessResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     ok: Literal[True] = True
     tool: str
     summary: str
@@ -82,6 +87,7 @@ class SuccessResult(BaseModel):
 
 
 class ErrorInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     code: ErrorCode
     message: str
     repair: str
@@ -90,12 +96,14 @@ class ErrorInfo(BaseModel):
 
 
 class ErrorResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     ok: Literal[False] = False
     error: ErrorInfo
     meta: Meta
 
 
 class ResolvedDefaults(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     config_mode: ConfigMode
     access: Access
     model: Optional[str] = None
@@ -106,6 +114,7 @@ class ResolvedDefaults(BaseModel):
 
 
 class StatusResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     ok: Literal[True] = True
     claude_found: bool
     claude_version: Optional[str] = None
