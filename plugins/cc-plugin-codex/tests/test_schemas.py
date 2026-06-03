@@ -5,7 +5,7 @@ from cc_plugin_codex.schemas import (
 
 
 def test_fingerprint_value():
-    assert FINGERPRINT == "cc-plugin-codex/0.1/schema-2"
+    assert FINGERPRINT == "cc-plugin-codex/0.1/schema-3"
 
 
 def test_success_result_dump_omits_none():
