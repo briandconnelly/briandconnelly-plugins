@@ -55,7 +55,18 @@ CAPABILITY_SUMMARY = (
 
 mcp = FastMCP(name="cc-plugin-codex", instructions=CAPABILITY_SUMMARY)
 
-_ANNOTATIONS = {"readOnlyHint": True, "openWorldHint": True}
+# Paid tools read code but are NOT idempotent (each call spends money and re-invokes
+# Claude) and are explicitly non-destructive (no writes/shell). openWorld: they reach
+# an external service (Anthropic).
+_PAID_ANNOTATIONS = {
+    "readOnlyHint": True, "openWorldHint": True,
+    "destructiveHint": False, "idempotentHint": False,
+}
+# claude_status is free, read-only, and safely repeatable.
+_STATUS_ANNOTATIONS = {
+    "readOnlyHint": True, "openWorldHint": False,
+    "destructiveHint": False, "idempotentHint": True,
+}
 
 
 def _result(payload: dict) -> ToolResult:
@@ -142,7 +153,7 @@ def _execute(tool, payload, r: Resolved, cwd,
                               context_summary=context_summary)
 
 
-@mcp.tool(annotations=_ANNOTATIONS, title="Ask Claude (second opinion)",
+@mcp.tool(annotations=_PAID_ANNOTATIONS, title="Ask Claude (second opinion)",
           output_schema=RESULT_SCHEMA)
 def claude_ask(
     prompt: Annotated[str, Field(description="The question to ask Claude.")],
@@ -176,7 +187,7 @@ def claude_ask(
     return _result(_execute("claude_ask", {"prompt": prompt, "context": context}, r, cwd))
 
 
-@mcp.tool(annotations=_ANNOTATIONS, title="Review changes with Claude",
+@mcp.tool(annotations=_PAID_ANNOTATIONS, title="Review changes with Claude",
           output_schema=RESULT_SCHEMA)
 def claude_review_changes(
     scope: Annotated[Scope, Field(description="working_tree|staged|branch")],
@@ -233,7 +244,7 @@ def claude_review_changes(
                    context_text=ctx.text, context_summary=ctx.summary))
 
 
-@mcp.tool(annotations=_ANNOTATIONS, title="Adversarial review with Claude",
+@mcp.tool(annotations=_PAID_ANNOTATIONS, title="Adversarial review with Claude",
           output_schema=RESULT_SCHEMA)
 def claude_adversarial_review(
     target: Annotated[str, Field(description="The plan/claim/decision to attack.")],
@@ -293,7 +304,7 @@ def claude_adversarial_review(
                    context_summary=context_summary))
 
 
-@mcp.tool(annotations=_ANNOTATIONS, title="Claude CLI status & defaults",
+@mcp.tool(annotations=_STATUS_ANNOTATIONS, title="Claude CLI status & defaults",
           output_schema=STATUS_SCHEMA)
 def claude_status() -> ToolResult:
     """Report whether `claude` is installed/usable, which config modes are available,

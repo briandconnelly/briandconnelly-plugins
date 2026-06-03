@@ -220,3 +220,14 @@ async def test_adversarial_bad_base_ref_is_structured_error(fake_claude, monkeyp
     assert data["ok"] is False
     assert data["error"]["code"] == "invalid_base"
     assert data["error"]["offending_param"] == "base"
+
+
+async def test_paid_tools_declare_cost_safety_hints():
+    # F4: paid, non-idempotent calls expose machine-readable hints, not just prose.
+    tools = await _tools_by_name()
+    for name in PAID_TOOLS:
+        ann = tools[name].annotations
+        assert ann is not None, name
+        assert ann.readOnlyHint is True, name
+        assert ann.destructiveHint is False, name
+        assert ann.idempotentHint is False, name
