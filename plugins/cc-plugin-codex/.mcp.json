@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "cc-plugin-codex": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/briandconnelly/briandconnelly-plugins.git#subdirectory=plugins/cc-plugin-codex",
+        "cc-plugin-codex-mcp"
+      ]
+    }
+  }
+}

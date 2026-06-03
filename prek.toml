@@ -2,6 +2,9 @@
 repo = "builtin"
 hooks = [
   { id = "check-json" },
-  { id = "end-of-file-fixer" },
-  { id = "trailing-whitespace" },
+  # Exclude GitHub workflow files: the Claude Code Action's GitHub App token
+  # exchange requires PR-branch workflow files to be byte-identical to the
+  # default branch, so these fixers must not rewrite their bytes.
+  { id = "end-of-file-fixer", exclude = '^\.github/workflows/' },
+  { id = "trailing-whitespace", exclude = '^\.github/workflows/' },
 ]
