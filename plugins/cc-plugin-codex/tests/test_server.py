@@ -341,3 +341,30 @@ async def test_capabilities_tool_returns_structured_contract():
     assert "claude_status" in data["free_tools"]
     assert data["negative_scope"]            # non-empty list of what it won't do
     assert data["prerequisites"]
+
+
+async def test_paid_failure_reports_cost_on_error_meta(monkeypatch):
+    # A non-zero claude exit that still emitted a cost-bearing JSON envelope
+    # (e.g. budget_exceeded) must report cost_usd/usage on the error meta, just
+    # like the is_error-envelope path does.
+    import cc_plugin_codex.server as srv
+    from cc_plugin_codex.claude import ClaudeRun
+
+    envelope = json.dumps({"type": "result", "is_error": True,
+                           "subtype": "error_max_budget_usd", "result": "over budget",
+                           "total_cost_usd": 0.05,
+                           "usage": {"input_tokens": 10, "output_tokens": 0}})
+
+    async def fake_run(cmd, cwd, timeout_seconds):
+        return ClaudeRun(stdout=envelope, stderr="", exit_code=1,
+                         elapsed_ms=5, timed_out=False)
+
+    monkeypatch.setattr(srv, "run_claude_async", fake_run)
+    async with Client(mcp) as client:
+        result = await client.call_tool("claude_ask", {"prompt": "x"},
+                                        raise_on_error=False)
+    data = structured(result)
+    assert data["ok"] is False
+    assert data["error"]["code"] == "budget_exceeded"
+    assert data["meta"]["cost_usd"] == 0.05
+    assert data["meta"]["usage"]["input_tokens"] == 10

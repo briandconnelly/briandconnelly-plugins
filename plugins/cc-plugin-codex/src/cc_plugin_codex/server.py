@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -22,7 +23,7 @@ from cc_plugin_codex.config import (
 from cc_plugin_codex.context import (
     InvalidBaseError, InvalidScopeError, gather_context,
 )
-from cc_plugin_codex.normalize import build_prompt, normalize_envelope
+from cc_plugin_codex.normalize import apply_cost_usage, build_prompt, normalize_envelope
 from cc_plugin_codex.schemas import (
     CAPABILITIES_SCHEMA, FINGERPRINT, RESULT_SCHEMA, STATUS_SCHEMA,
     Access, CapabilitiesResult, ConfigMode, Detail,
@@ -195,6 +196,14 @@ async def _execute(tool, payload, r: Resolved, cwd,
     meta = _meta(cwd, r.config_mode, r.access, r.timeout, run.elapsed_ms, run.exit_code,
                  scope, base, workspace_source=workspace_source)
     if run.exit_code != 0 or run.timed_out:
+        # A non-zero exit can still carry a cost-bearing JSON envelope (e.g.
+        # budget_exceeded); report what it spent when available.
+        try:
+            env = json.loads(run.stdout)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            env = None
+        if isinstance(env, dict):
+            apply_cost_usage(meta, env)
         info = classify_failure(run)
         return _err(info.code, info.message, info.repair, meta, retryable=info.retryable)
     return normalize_envelope(tool, run.stdout, meta, detail=r.detail,
@@ -224,7 +233,7 @@ async def claude_ask(
     Paid + sends your prompt to Anthropic. Read-only. Blocks up to timeout_seconds;
     can be cancelled by the client (terminates the Claude process), not resumed.
     Invalid values for typed enum params
-    (config_mode, access, scope, detail) are rejected by the framework as a schema
+    (config_mode, access, detail) are rejected by the framework as a schema
     validation error BEFORE the tool runs and do NOT use the ok:false envelope; all
     other failures return ok:false. Errors come back as
     {"ok": false, "error": {code, message, repair}} with is_error set — branch on

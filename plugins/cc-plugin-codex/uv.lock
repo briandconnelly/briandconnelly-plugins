@@ -151,6 +151,7 @@ name = "cc-plugin-codex"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "fastmcp" },
     { name = "pydantic" },
 ]
@@ -164,6 +165,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4" },
     { name = "fastmcp", specifier = ">=3.4" },
     { name = "pydantic", specifier = ">=2" },
 ]

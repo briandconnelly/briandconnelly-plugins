@@ -36,5 +36,5 @@ Do NOT call Claude in a loop, and never call Claude just because Claude suggeste
 
 - Each call is PAID and sends your code/diff to Anthropic. Call deliberately.
 - The server never sends `.env`/secret files; redaction is filename-based, not content-scanning, so do not paste secrets into prompts and do not rely on it to catch secrets hardcoded inside ordinary source files.
-- Default is read-only and `config_mode=inherit`. Use `config_mode=bare` only when you want a fully independent reviewer and have `ANTHROPIC_API_KEY` set.
+- Default access is `toolless` (Claude gets no tools) and `config_mode=inherit`; both access modes are read-only (Claude never gets write/Bash). Use `config_mode=bare` only when you want a fully independent reviewer and have `ANTHROPIC_API_KEY` set.
 - Cap cost/time with `max_budget_usd` and `timeout_seconds` for large reviews.

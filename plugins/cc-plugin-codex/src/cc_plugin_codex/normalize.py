@@ -111,6 +111,24 @@ def _error(info: ErrorInfo, meta: Meta) -> dict:
     return ErrorResult(error=info, meta=meta).model_dump(mode="json", exclude_none=True)
 
 
+def apply_cost_usage(meta: Meta, env: dict) -> None:
+    """Plumb total_cost_usd / usage from a claude JSON envelope onto meta.
+
+    Used on both the success path and the non-zero-exit error path, so a failed
+    paid call (e.g. budget_exceeded) still reports what it spent when available."""
+    cost = env.get("total_cost_usd")
+    if isinstance(cost, (int, float)):
+        meta.cost_usd = float(cost)
+    raw_usage = env.get("usage")
+    if isinstance(raw_usage, dict):
+        meta.usage = Usage(
+            input_tokens=raw_usage.get("input_tokens"),
+            output_tokens=raw_usage.get("output_tokens"),
+            cache_read_input_tokens=raw_usage.get("cache_read_input_tokens"),
+            cache_creation_input_tokens=raw_usage.get("cache_creation_input_tokens"),
+        )
+
+
 def normalize_envelope(
     tool: str,
     stdout: str,
@@ -131,17 +149,7 @@ def normalize_envelope(
         )
 
     # Plumb cost and usage onto meta regardless of success/error path.
-    cost = env.get("total_cost_usd")
-    if isinstance(cost, (int, float)):
-        meta.cost_usd = float(cost)
-    raw_usage = env.get("usage")
-    if isinstance(raw_usage, dict):
-        meta.usage = Usage(
-            input_tokens=raw_usage.get("input_tokens"),
-            output_tokens=raw_usage.get("output_tokens"),
-            cache_read_input_tokens=raw_usage.get("cache_read_input_tokens"),
-            cache_creation_input_tokens=raw_usage.get("cache_creation_input_tokens"),
-        )
+    apply_cost_usage(meta, env)
 
     if env.get("is_error") or env.get("subtype") not in (None, "success"):
         detail = (env.get("result") or "").strip() or (env.get("subtype") or "unknown error")
