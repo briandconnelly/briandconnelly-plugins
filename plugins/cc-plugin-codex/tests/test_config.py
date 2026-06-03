@@ -1,0 +1,56 @@
+import cc_plugin_codex.config as cfg
+
+
+def test_inherit_flags():
+    assert cfg.config_mode_flags("inherit", resume=False) == ["--no-session-persistence"]
+
+
+def test_inherit_flags_with_resume_drops_no_persistence():
+    assert cfg.config_mode_flags("inherit", resume=True) == []
+
+
+def test_scoped_flags():
+    f = cfg.config_mode_flags("scoped", resume=False)
+    assert "--setting-sources" in f and "project" in f
+    assert "--strict-mcp-config" in f
+    assert '{"mcpServers":{}}' in f
+
+
+def test_bare_flags():
+    f = cfg.config_mode_flags("bare", resume=False)
+    assert "--bare" in f
+    assert "--no-session-persistence" not in f
+
+
+def test_access_flags():
+    assert cfg.access_flags("toolless") == ["--tools", ""]
+    ro = cfg.access_flags("readonly")
+    assert ro[:2] == ["--tools", "Read,Grep,Glob"]
+    assert "Bash" in ro[-1]
+
+
+def test_bare_available(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert cfg.bare_available() is False
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-x")
+    assert cfg.bare_available() is True
+
+
+def test_defaults_from_env(monkeypatch):
+    monkeypatch.setenv("CC_PLUGIN_CODEX_CLAUDE_CONFIG", "scoped")
+    monkeypatch.setenv("CC_PLUGIN_CODEX_TIMEOUT_SECONDS", "240")
+    d = cfg.defaults()
+    assert d.config_mode == "scoped"
+    assert d.timeout_seconds == 240
+    assert d.access == "toolless"
+
+
+def test_clamps():
+    assert cfg.clamp_budget(99.0) == cfg.MAX_BUDGET_USD
+    assert cfg.clamp_budget(0.0) == cfg.MIN_BUDGET_USD
+    assert cfg.clamp_timeout(99999) == cfg.MAX_TIMEOUT_SECONDS
+    assert cfg.clamp_timeout(1) == cfg.MIN_TIMEOUT_SECONDS
+
+
+def test_critic_prompt_mentions_independence():
+    assert "independent critique" in cfg.INDEPENDENT_CRITIC_PROMPT
