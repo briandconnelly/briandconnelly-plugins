@@ -23,7 +23,7 @@ Do NOT call Claude in a loop, and never call Claude just because Claude suggeste
 - `claude_ask` — a free-form second opinion or recommendation.
 - `claude_review_changes` — Claude reviews your git diff (`scope` = working_tree | staged | branch).
 - `claude_adversarial_review` — Claude attacks a plan/claim and lists the strongest counterarguments.
-- `claude_status` — check that `claude` is installed and authenticated (free; run this first if a call fails).
+- `claude_status` — free readiness check: reports whether `claude` is installed, authenticated (`claude_authenticated`), version-compatible (`version_supported`), and overall `ready`, plus the resolved defaults a no-arg call would use. Run it first if a call fails, or to confirm readiness before spending.
 
 ## Reading results
 
@@ -38,3 +38,4 @@ Do NOT call Claude in a loop, and never call Claude just because Claude suggeste
 - The server never sends `.env`/secret files; redaction is filename-based, not content-scanning, so do not paste secrets into prompts and do not rely on it to catch secrets hardcoded inside ordinary source files.
 - Default access is `toolless` (Claude gets no tools) and `config_mode=inherit`; both access modes are read-only (Claude never gets write/Bash). Use `config_mode=bare` only when you want a fully independent reviewer and have `ANTHROPIC_API_KEY` set.
 - Cap cost/time with `max_budget_usd` and `timeout_seconds` for large reviews.
+- Reviews run at `effort=xhigh` by default for depth. Lower `effort` to `high`/`medium` to save cost on routine changes; raise to `max` for the most subtle ones.

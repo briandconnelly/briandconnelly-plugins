@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 # Bump this whenever the agent-visible surface changes: tool names, input or
 # output schemas, the ErrorCode set, the config_mode/access/scope/detail value
 # sets, or the capability guarantees in CAPABILITY_SUMMARY. Clients cache by it.
-FINGERPRINT = "cc-plugin-codex/0.1/schema-4"
+FINGERPRINT = "cc-plugin-codex/0.1/schema-5"
 
 Severity = Literal["critical", "high", "medium", "low", "nit"]
 Verdict = Literal["pass", "concerns", "fail", "unknown"]
@@ -19,6 +19,7 @@ ConfigMode = Literal["inherit", "scoped", "bare"]
 Access = Literal["toolless", "readonly"]
 Scope = Literal["working_tree", "staged", "branch"]
 Detail = Literal["summary", "full"]
+Effort = Literal["low", "medium", "high", "xhigh", "max"]
 
 ErrorCode = Literal[
     "claude_not_found", "claude_auth_required", "api_key_required",
@@ -120,6 +121,7 @@ class ResolvedDefaults(BaseModel):
     config_mode: ConfigMode
     access: Access
     model: Optional[str] = None
+    effort: Effort
     max_budget_usd: float
     timeout_seconds: int
     budget_bounds: list[float]   # [min, max] clamp range for max_budget_usd
@@ -131,6 +133,11 @@ class StatusResult(BaseModel):
     ok: Literal[True] = True
     claude_found: bool
     claude_version: Optional[str] = None
+    # Readiness probes (all free — no paid Claude call):
+    claude_authenticated: Optional[bool] = None   # None = could not determine
+    auth_detail: Optional[str] = None
+    version_supported: Optional[bool] = None       # matches the supported CLI major
+    ready: bool = False        # found AND a supported version AND authenticated
     config_modes_available: dict
     resolved_defaults: ResolvedDefaults
     caveat: str

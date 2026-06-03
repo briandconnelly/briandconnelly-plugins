@@ -27,16 +27,36 @@ class ClaudeRun:
 
 
 def build_command(prompt: str, config_mode: str, access: str, model: str | None,
-                  max_budget_usd: float) -> list[str]:
-    cmd = ["claude", "-p", "--output-format", "json"]
+                  max_budget_usd: float, effort: str | None = None) -> list[str]:
+    # --no-chrome disables the "Claude in Chrome" integration, which could
+    # otherwise open an interactive picker that hangs an unattended run until the
+    # timeout (burning the whole timeout and the spend) instead of answering.
+    cmd = ["claude", "-p", "--output-format", "json", "--no-chrome"]
     cmd += config_mode_flags(config_mode)
     cmd += access_flags(access)
     cmd += ["--append-system-prompt", INDEPENDENT_CRITIC_PROMPT]
     cmd += ["--max-budget-usd", f"{max_budget_usd}"]
+    if effort:
+        cmd += ["--effort", effort]
     if model:
         cmd += ["--model", model]
     cmd += ["--", prompt]  # end-of-options separator, then the prompt as positional
     return cmd
+
+
+def auth_status(timeout_seconds: int = 10) -> tuple[bool | None, str | None]:
+    """Probe `claude auth status` without making a paid call.
+
+    Returns (logged_in, detail). logged_in is None when the probe could not run
+    (claude missing, timeout) so callers can report 'unknown' rather than a
+    misleading False."""
+    try:
+        proc = subprocess.run(["claude", "auth", "status", "--text"],
+                              capture_output=True, text=True, timeout=timeout_seconds)
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    detail = (proc.stdout or proc.stderr).strip() or None
+    return proc.returncode == 0, detail
 
 
 def _kill_process_tree(proc: subprocess.Popen) -> None:

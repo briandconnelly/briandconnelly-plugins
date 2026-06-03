@@ -158,7 +158,7 @@ async def test_claude_ask_returns_normalized(fake_claude):
     data = structured(result)
     assert data["ok"] is True
     assert data["verdict"] == "concerns"
-    assert data["meta"]["fingerprint"] == "cc-plugin-codex/0.1/schema-4"
+    assert data["meta"]["fingerprint"] == "cc-plugin-codex/0.1/schema-5"
 
 
 async def test_invalid_enum_param_rejected_by_schema(fake_claude):
@@ -218,10 +218,48 @@ async def test_status_reports_resolved_defaults(monkeypatch):
     rd = structured(result)["resolved_defaults"]
     assert rd["config_mode"] == "scoped"
     assert rd["access"] == "toolless"
+    assert rd["effort"] == "xhigh"              # depth-first default effort
     assert rd["max_budget_usd"] == 5.0          # clamped to MAX_BUDGET_USD
     assert rd["timeout_seconds"] == 180
     assert rd["budget_bounds"] == [0.01, 5.0]
     assert rd["timeout_bounds"] == [10, 600]
+
+
+async def test_status_reports_readiness(monkeypatch):
+    # claude_status must surface auth + version-compatibility for FREE, so an
+    # agent can detect a logged-out or incompatible CLI before any paid call.
+    import cc_plugin_codex.server as srv
+
+    monkeypatch.setattr(srv.shutil, "which", lambda _: "/usr/bin/claude")
+
+    class _Ver:
+        stdout = "2.1.162 (Claude Code)"
+
+    monkeypatch.setattr(srv.subprocess, "run", lambda *a, **k: _Ver())
+    monkeypatch.setattr(srv, "auth_status", lambda *a, **k: (True, "Logged in"))
+    async with Client(mcp) as client:
+        result = await client.call_tool("claude_status", {})
+    data = structured(result)
+    assert data["claude_authenticated"] is True
+    assert data["version_supported"] is True
+    assert data["ready"] is True
+
+
+async def test_status_not_ready_when_logged_out(monkeypatch):
+    import cc_plugin_codex.server as srv
+
+    monkeypatch.setattr(srv.shutil, "which", lambda _: "/usr/bin/claude")
+
+    class _Ver:
+        stdout = "2.1.162 (Claude Code)"
+
+    monkeypatch.setattr(srv.subprocess, "run", lambda *a, **k: _Ver())
+    monkeypatch.setattr(srv, "auth_status", lambda *a, **k: (False, "Not logged in"))
+    async with Client(mcp) as client:
+        result = await client.call_tool("claude_status", {})
+    data = structured(result)
+    assert data["claude_authenticated"] is False
+    assert data["ready"] is False
 
 
 async def test_env_default_config_mode_used(fake_claude, monkeypatch):
@@ -334,7 +372,7 @@ async def test_capabilities_tool_returns_structured_contract():
     async with Client(mcp) as client:
         result = await client.call_tool("cc_codex_capabilities", {})
     data = structured(result)
-    assert data["fingerprint"] == "cc-plugin-codex/0.1/schema-4"
+    assert data["fingerprint"] == "cc-plugin-codex/0.1/schema-5"
     assert data["transport"] == "stdio"
     assert set(data["paid_tools"]) == {
         "claude_ask", "claude_review_changes", "claude_adversarial_review"}

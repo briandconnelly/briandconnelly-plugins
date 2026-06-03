@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 
 EMPTY_MCP = '{"mcpServers":{}}'
 
 MIN_BUDGET_USD, MAX_BUDGET_USD = 0.01, 5.00
 MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS = 10, 600
+
+# Reasoning effort levels the `claude` CLI accepts for `--effort`. We default to
+# a high level because the whole value of this server is review depth; lower it
+# per-call (or via CC_PLUGIN_CODEX_EFFORT) to trade rigor for cost on routine work.
+VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+DEFAULT_EFFORT = "xhigh"
+
+# Major version of the `claude` CLI this server is built against. claude_status
+# reports whether the installed CLI matches, so a future breaking change in the
+# CLI contract is visible for free instead of only surfacing mid paid call.
+SUPPORTED_MAJOR = 2
 
 INDEPENDENT_CRITIC_PROMPT = (
     "You are being asked for an independent critique of Codex's work.\n"
@@ -34,6 +46,7 @@ class Defaults:
     model: str | None
     max_budget_usd: float
     timeout_seconds: int
+    effort: str
 
 
 def _env_float(name: str, default: float) -> float:
@@ -63,7 +76,28 @@ def defaults() -> Defaults:
         model=os.environ.get("CC_PLUGIN_CODEX_MODEL") or None,
         max_budget_usd=_env_float("CC_PLUGIN_CODEX_MAX_BUDGET_USD", 1.00),
         timeout_seconds=_env_int("CC_PLUGIN_CODEX_TIMEOUT_SECONDS", 180),
+        effort=sanitize_effort(os.environ.get("CC_PLUGIN_CODEX_EFFORT")),
     )
+
+
+def sanitize_effort(value: str | None) -> str:
+    """Normalize an effort value to a CLI-accepted level, falling back to the
+    default. An invalid env value must not break a paid call, so it degrades
+    rather than raising."""
+    return value if value in VALID_EFFORTS else DEFAULT_EFFORT
+
+
+def version_supported(version: str | None) -> bool | None:
+    """Whether the installed `claude --version` string matches SUPPORTED_MAJOR.
+
+    Returns None when the version is unknown/unparseable (so callers can report
+    'unknown' rather than a false 'unsupported')."""
+    if not version:
+        return None
+    match = re.search(r"(\d+)\.\d+\.\d+", version)
+    if not match:
+        return None
+    return int(match.group(1)) == SUPPORTED_MAJOR
 
 
 def clamp_budget(value: float) -> float:

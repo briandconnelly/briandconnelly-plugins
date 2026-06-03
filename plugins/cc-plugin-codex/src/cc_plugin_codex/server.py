@@ -15,10 +15,13 @@ from fastmcp import Context, FastMCP
 from fastmcp.tools.tool import ToolResult
 from pydantic import Field
 
-from cc_plugin_codex.claude import build_command, classify_failure, run_claude_async
+from cc_plugin_codex.claude import (
+    auth_status, build_command, classify_failure, run_claude_async,
+)
 from cc_plugin_codex.config import (
     MAX_BUDGET_USD, MAX_TIMEOUT_SECONDS, MIN_BUDGET_USD, MIN_TIMEOUT_SECONDS,
-    bare_available, clamp_budget, clamp_timeout, defaults,
+    VALID_EFFORTS, bare_available, clamp_budget, clamp_timeout, defaults,
+    sanitize_effort, version_supported,
 )
 from cc_plugin_codex.context import (
     InvalidBaseError, InvalidScopeError, gather_context,
@@ -26,7 +29,7 @@ from cc_plugin_codex.context import (
 from cc_plugin_codex.normalize import apply_cost_usage, build_prompt, normalize_envelope
 from cc_plugin_codex.schemas import (
     CAPABILITIES_SCHEMA, FINGERPRINT, RESULT_SCHEMA, STATUS_SCHEMA,
-    Access, CapabilitiesResult, ConfigMode, Detail,
+    Access, CapabilitiesResult, ConfigMode, Detail, Effort,
     ErrorInfo, ErrorResult, Meta, ResolvedDefaults, Scope, StatusResult,
 )
 
@@ -51,7 +54,7 @@ CAPABILITY_SUMMARY = (
     "cannot be resumed; narrow the scope or lower timeout_seconds to bound a call. "
     "Prerequisite: the `claude` CLI installed and authenticated; config_mode=bare "
     "additionally requires ANTHROPIC_API_KEY. "
-    "Note: in claude 2.1.161 there is no OAuth-preserving way to fully strip "
+    "Note: in claude 2.1.x there is no OAuth-preserving way to fully strip "
     "CLAUDE.md/memory — full config independence (config_mode=bare) requires an API key. "
     "Invalid enum-typed arguments are rejected as schema validation errors before "
     "a tool runs (not via the ok:false envelope). "
@@ -150,10 +153,11 @@ class Resolved:
     budget: float
     timeout: int
     detail: str
+    effort: str
 
 
 def _resolve(config_mode, access, model, max_budget_usd, timeout_seconds, detail,
-             cwd, scope=None, base=None, workspace_source=None):
+             cwd, scope=None, base=None, workspace_source=None, effort=None):
     """Resolve env defaults + clamps and validate. Returns (Resolved, None) or (None, error_dict)."""
     d = defaults()
     cm = config_mode or d.config_mode
@@ -162,6 +166,7 @@ def _resolve(config_mode, access, model, max_budget_usd, timeout_seconds, detail
     budget = clamp_budget(max_budget_usd if max_budget_usd is not None else d.max_budget_usd)
     timeout = clamp_timeout(timeout_seconds if timeout_seconds is not None else d.timeout_seconds)
     det = detail if detail in ("summary", "full") else "summary"
+    eff = effort if effort in VALID_EFFORTS else d.effort
 
     # Validate before building Meta (Meta uses Literal types — invalid values
     # would raise Pydantic errors before we can return a structured response).
@@ -184,14 +189,14 @@ def _resolve(config_mode, access, model, max_budget_usd, timeout_seconds, detail
                           "config_mode=bare requires ANTHROPIC_API_KEY, which is unset.",
                           "Set ANTHROPIC_API_KEY, or use config_mode inherit/scoped.",
                           meta, offending="config_mode")
-    return Resolved(cm, ac, mdl, budget, timeout, det), None
+    return Resolved(cm, ac, mdl, budget, timeout, det, eff), None
 
 
 async def _execute(tool, payload, r: Resolved, cwd,
                    scope=None, base=None, context_text="", context_summary=None,
                    workspace_source=None) -> dict:
     prompt = build_prompt(tool, payload, context_text)
-    cmd = build_command(prompt, r.config_mode, r.access, r.model, r.budget)
+    cmd = build_command(prompt, r.config_mode, r.access, r.model, r.budget, r.effort)
     run = await run_claude_async(cmd, cwd=cwd, timeout_seconds=r.timeout)
     meta = _meta(cwd, r.config_mode, r.access, r.timeout, run.elapsed_ms, run.exit_code,
                  scope, base, workspace_source=workspace_source)
@@ -221,6 +226,9 @@ async def claude_ask(
     config_mode: Annotated[Optional[ConfigMode], Field(description="inherit|scoped|bare")] = None,
     access: Annotated[Optional[Access], Field(description="toolless|readonly")] = None,
     model: Optional[str] = None,
+    effort: Annotated[Optional[Effort], Field(
+        description="Reasoning effort: low|medium|high|xhigh|max. "
+        "Raise for high-stakes reviews; omit to use the server default.")] = None,
     max_budget_usd: Optional[float] = None,
     timeout_seconds: Optional[int] = None,
     detail: Annotated[Detail, Field(description="summary|full")] = "summary",
@@ -254,7 +262,7 @@ async def claude_ask(
                        "Pass workspace_root as an absolute path to an existing directory, or "
                        "configure an MCP root.", meta, offending="workspace_root"))
     r, err = _resolve(config_mode, access, model, max_budget_usd, timeout_seconds,
-                      detail, cwd, workspace_source=ws_source)
+                      detail, cwd, workspace_source=ws_source, effort=effort)
     if err:
         return _result(err)
     payload = {"prompt": prompt, "context": context}
@@ -274,6 +282,9 @@ async def claude_review_changes(
     config_mode: Annotated[Optional[ConfigMode], Field(description="inherit|scoped|bare")] = None,
     access: Annotated[Optional[Access], Field(description="toolless|readonly")] = None,
     model: Optional[str] = None,
+    effort: Annotated[Optional[Effort], Field(
+        description="Reasoning effort: low|medium|high|xhigh|max. "
+        "Raise for high-stakes reviews; omit to use the server default.")] = None,
     max_budget_usd: Optional[float] = None,
     timeout_seconds: Optional[int] = None,
     detail: Annotated[Detail, Field(description="summary|full")] = "summary",
@@ -308,7 +319,8 @@ async def claude_review_changes(
                        "configure an MCP root.", meta, offending="workspace_root"))
     # Validate options BEFORE touching git, so bad config isn't masked by git errors.
     r, err = _resolve(config_mode, access, model, max_budget_usd, timeout_seconds,
-                      detail, cwd, scope=scope, base=base, workspace_source=ws_source)
+                      detail, cwd, scope=scope, base=base, workspace_source=ws_source,
+                      effort=effort)
     if err:
         return _result(err)
     meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
@@ -351,6 +363,9 @@ async def claude_adversarial_review(
     config_mode: Annotated[Optional[ConfigMode], Field(description="inherit|scoped|bare")] = None,
     access: Annotated[Optional[Access], Field(description="toolless|readonly")] = None,
     model: Optional[str] = None,
+    effort: Annotated[Optional[Effort], Field(
+        description="Reasoning effort: low|medium|high|xhigh|max. "
+        "Raise for high-stakes reviews; omit to use the server default.")] = None,
     max_budget_usd: Optional[float] = None,
     timeout_seconds: Optional[int] = None,
     detail: Annotated[Detail, Field(description="summary|full")] = "summary",
@@ -380,7 +395,8 @@ async def claude_adversarial_review(
                        "Pass workspace_root as an absolute path to an existing directory, or "
                        "configure an MCP root.", meta, offending="workspace_root"))
     r, err = _resolve(config_mode, access, model, max_budget_usd, timeout_seconds,
-                      detail, cwd, scope=scope, base=base, workspace_source=ws_source)
+                      detail, cwd, scope=scope, base=base, workspace_source=ws_source,
+                      effort=effort)
     if err:
         return _result(err)
     context_text = ""
@@ -430,17 +446,25 @@ def claude_status() -> ToolResult:
     """
     found = shutil.which("claude") is not None
     version = None
+    authenticated: bool | None = None
+    auth_detail: str | None = None
+    supported: bool | None = None
     if found:
         try:
             version = subprocess.run(["claude", "--version"], capture_output=True,
                                      text=True, timeout=10).stdout.strip()
         except Exception:
             version = None
+        supported = version_supported(version)
+        # Free auth probe: lets an agent discover a logged-out CLI before
+        # spending money on a paid call that would only then fail auth.
+        authenticated, auth_detail = auth_status()
     d = defaults()
     resolved = ResolvedDefaults(
         config_mode=d.config_mode if d.config_mode in ("inherit", "scoped", "bare") else "inherit",
         access=d.access if d.access in ("toolless", "readonly") else "toolless",
         model=d.model,
+        effort=sanitize_effort(d.effort),
         max_budget_usd=clamp_budget(d.max_budget_usd),
         timeout_seconds=clamp_timeout(d.timeout_seconds),
         budget_bounds=[MIN_BUDGET_USD, MAX_BUDGET_USD],
@@ -449,11 +473,15 @@ def claude_status() -> ToolResult:
     status = StatusResult(
         claude_found=found,
         claude_version=version,
+        claude_authenticated=authenticated,
+        auth_detail=auth_detail,
+        version_supported=supported,
+        ready=bool(found and supported and authenticated),
         config_modes_available={
             "inherit": True, "scoped": True, "bare": bare_available(),
         },
         resolved_defaults=resolved,
-        caveat=("OAuth-preserving + CLAUDE.md-free is impossible in claude 2.1.161; "
+        caveat=("OAuth-preserving + CLAUDE.md-free is impossible in claude 2.1.x; "
                 "config_mode=bare needs ANTHROPIC_API_KEY."),
     )
     return _result(status.model_dump(mode="json", exclude_none=True))
