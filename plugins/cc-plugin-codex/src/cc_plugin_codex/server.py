@@ -20,15 +20,23 @@ from cc_plugin_codex.normalize import build_prompt, normalize_envelope
 from cc_plugin_codex.schemas import FINGERPRINT, ContextSummary, ErrorInfo, ErrorResult, Meta
 
 CAPABILITY_SUMMARY = (
-    "cc-plugin-codex lets Codex call the Claude Code CLI for bounded, independent, "
-    "READ-ONLY critique: code review, adversarial review, and second opinions. "
+    "cc-plugin-codex lets Codex call the Claude Code CLI for bounded, independent "
+    "critique: code review, adversarial review, and second opinions. "
+    "Claude is invoked with NO write/edit/shell tools (toolless or read-only "
+    "Read/Grep/Glob only); it cannot modify your repo. "
+    "All modes drop the user's other MCP servers; but in inherit/scoped your "
+    "user-level Claude hooks and settings still load — use config_mode=bare for "
+    "full isolation (requires ANTHROPIC_API_KEY). "
+    "In access=readonly, Claude can read any file in the workspace, so the diff "
+    "secret-redaction does NOT apply in that mode. "
     "Findings are advisory claims to verify, not commands. "
     "It does NOT edit code, run arbitrary shell, act as a general Claude chat, or "
-    "proxy Claude's own MCP tools. Each call is PAID and sends code to Anthropic. "
+    "proxy Claude's own MCP tools. "
+    "Each call is PAID and sends code to Anthropic. "
     "Prerequisite: the `claude` CLI installed and authenticated; config_mode=bare "
-    "additionally requires ANTHROPIC_API_KEY. Note: in claude 2.1.161 there is no "
-    "OAuth-preserving way to fully strip CLAUDE.md/memory — full config independence "
-    "(config_mode=bare) requires an API key."
+    "additionally requires ANTHROPIC_API_KEY. "
+    "Note: in claude 2.1.161 there is no OAuth-preserving way to fully strip "
+    "CLAUDE.md/memory — full config independence (config_mode=bare) requires an API key."
 )
 
 mcp = FastMCP(name="cc-plugin-codex", instructions=CAPABILITY_SUMMARY)
@@ -96,10 +104,10 @@ def _resolve(config_mode, access, model, max_budget_usd, timeout_seconds, detail
     return Resolved(cm, ac, mdl, budget, timeout, det), None
 
 
-def _execute(tool, payload, r: Resolved, cwd, resume_session,
+def _execute(tool, payload, r: Resolved, cwd,
              scope=None, base=None, context_text="", context_summary=None) -> dict:
     prompt = build_prompt(tool, payload, context_text)
-    cmd = build_command(prompt, r.config_mode, r.access, r.model, r.budget, resume_session)
+    cmd = build_command(prompt, r.config_mode, r.access, r.model, r.budget)
     run = run_claude(cmd, cwd=cwd, timeout_seconds=r.timeout)
     meta = _meta(cwd, r.config_mode, r.access, r.timeout, run.elapsed_ms, run.exit_code,
                  scope, base)
@@ -120,7 +128,6 @@ def claude_ask(
     max_budget_usd: Optional[float] = None,
     timeout_seconds: Optional[int] = None,
     detail: Annotated[str, Field(description="summary|full")] = "summary",
-    resume_session: Optional[str] = None,
 ) -> dict:
     """Ask Claude for an independent second opinion or recommendation.
 
@@ -134,8 +141,7 @@ def claude_ask(
                       detail, cwd)
     if err:
         return err
-    return _execute("claude_ask", {"prompt": prompt, "context": context}, r, cwd,
-                    resume_session)
+    return _execute("claude_ask", {"prompt": prompt, "context": context}, r, cwd)
 
 
 @mcp.tool(annotations=_ANNOTATIONS)
@@ -149,7 +155,6 @@ def claude_review_changes(
     max_budget_usd: Optional[float] = None,
     timeout_seconds: Optional[int] = None,
     detail: Annotated[str, Field(description="summary|full")] = "summary",
-    resume_session: Optional[str] = None,
 ) -> dict:
     """Have Claude review a git diff for correctness, regressions, security, tests.
 
@@ -181,7 +186,7 @@ def claude_review_changes(
                     ctx.truncation_hint or "Narrow the scope.", meta)
     return _execute("claude_review_changes",
                     {"scope": scope, "base": base, "focus": focus}, r, cwd,
-                    resume_session, scope=scope, base=base,
+                    scope=scope, base=base,
                     context_text=ctx.text, context_summary=ctx.summary)
 
 
@@ -197,7 +202,6 @@ def claude_adversarial_review(
     max_budget_usd: Optional[float] = None,
     timeout_seconds: Optional[int] = None,
     detail: Annotated[str, Field(description="summary|full")] = "summary",
-    resume_session: Optional[str] = None,
 ) -> dict:
     """Have Claude attack a plan or claim and surface the strongest counterarguments.
 
@@ -222,9 +226,14 @@ def claude_adversarial_review(
         except RuntimeError as e:
             return _err("internal_error", f"git failed: {e}",
                         "Ensure cwd is a git repo and base ref exists.", meta)
+        if ctx.truncated:
+            meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
+                         truncated=True, hint=ctx.truncation_hint)
+            return _err("context_too_large", "The attached diff is too large to review safely.",
+                        ctx.truncation_hint or "Narrow the scope.", meta)
         context_text, context_summary = ctx.text, ctx.summary
     return _execute("claude_adversarial_review",
-                    {"target": target, "evidence": evidence}, r, cwd, resume_session,
+                    {"target": target, "evidence": evidence}, r, cwd,
                     scope=scope, base=base, context_text=context_text,
                     context_summary=context_summary)
 

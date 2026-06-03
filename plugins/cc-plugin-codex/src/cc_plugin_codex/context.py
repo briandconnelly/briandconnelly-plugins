@@ -10,6 +10,14 @@ from cc_plugin_codex.schemas import ContextSummary
 
 MAX_DIFF_BYTES = 200_000
 
+_REF_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+
+
+def _valid_ref(ref: str) -> bool:
+    """A conservative git ref/commit check: no leading dash, no option/shell chars."""
+    return bool(ref) and not ref.startswith("-") and bool(_REF_RE.match(ref))
+
+
 SECRET_PATH_RE = re.compile(
     r"(^|/)(\.env(\.|$)|.*\.env$|.*\.pem$|.*\.key$|id_rsa|id_ed25519|.*\.p12$)",
     re.IGNORECASE,
@@ -33,14 +41,18 @@ def _git(cwd: str, *args: str) -> str:
 
 
 def _diff_args(scope: str, base: str) -> list[str]:
-    # --no-ext-diff forces unified diff format even when diff.external is configured
-    # (e.g. difftastic), so our parser always sees standard `diff --git` headers.
+    # --no-ext-diff + --no-textconv prevent configured external/textconv diff drivers
+    # from executing commands during our own git call.
+    common = ["diff", "--no-ext-diff", "--no-textconv"]
     if scope == "working_tree":
-        return ["diff", "--no-ext-diff"]
+        return common
     if scope == "staged":
-        return ["diff", "--cached", "--no-ext-diff"]
+        return common + ["--cached"]
     if scope == "branch":
-        return ["diff", f"{base}...HEAD", "--no-ext-diff"]
+        if not _valid_ref(base):
+            raise ValueError(f"invalid base ref: {base!r}")
+        # --end-of-options ensures the ref can never be parsed as a git option.
+        return common + ["--end-of-options", f"{base}...HEAD"]
     raise ValueError(f"invalid scope: {scope}")
 
 

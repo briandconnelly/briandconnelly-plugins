@@ -31,6 +31,10 @@ _VALID_CONFIDENCE = {"low", "medium", "high"}
 _VALID_SEVERITY = {"critical", "high", "medium", "low", "nit"}
 
 
+def _str_list(value: Any) -> list[str]:
+    return [str(x) for x in value if x] if isinstance(value, list) else []
+
+
 def build_prompt(tool: str, payload: dict[str, Any], context_text: str) -> str:
     parts = [_LEAD.get(tool, _LEAD["claude_ask"])]
     if tool == "claude_ask":
@@ -131,6 +135,8 @@ def normalize_envelope(tool: str, stdout: str, meta: Meta, detail: str,
                                verdict="unknown", confidence="low", raw_response=raw,
                                context_summary=context_summary if detail == "full" else None,
                                meta=meta)
+        if denials:
+            result.meta.permission_denials = denials
         return result.model_dump(mode="json", exclude_none=True)
 
     result = SuccessResult(
@@ -139,10 +145,12 @@ def normalize_envelope(tool: str, stdout: str, meta: Meta, detail: str,
         verdict=_clamp(inner.get("verdict"), _VALID_VERDICT, "unknown"),
         confidence=_clamp(inner.get("confidence"), _VALID_CONFIDENCE, "low"),
         findings=_clean_findings(inner.get("findings", [])),
-        questions=[str(q) for q in inner.get("questions", []) if q],
-        assumptions=[str(a) for a in inner.get("assumptions", []) if a],
+        questions=_str_list(inner.get("questions")),
+        assumptions=_str_list(inner.get("assumptions")),
         raw_response=raw,
         context_summary=context_summary if detail == "full" else None,
         meta=meta,
     )
+    if denials:
+        result.meta.permission_denials = denials
     return result.model_dump(mode="json", exclude_none=True)

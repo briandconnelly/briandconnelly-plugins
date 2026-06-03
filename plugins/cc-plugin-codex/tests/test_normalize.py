@@ -98,3 +98,19 @@ def test_normalize_unstructured_inner_falls_back():
     assert res["ok"] is True
     assert res["verdict"] == "unknown"
     assert "fine" in res["summary"]
+
+
+def test_normalize_denials_recorded_on_success():
+    inner = {"summary": "ok", "verdict": "pass", "confidence": "high",
+             "findings": [], "questions": [], "assumptions": []}
+    res = normalize_envelope("claude_ask", _env(inner, permission_denials=[{"tool": "Bash"}]),
+                             _meta(), detail="summary")
+    assert res["ok"] is True
+    assert res["meta"]["permission_denials"] == [{"tool": "Bash"}]
+
+
+def test_normalize_string_questions_not_exploded():
+    inner = {"summary": "x", "verdict": "pass", "confidence": "high",
+             "findings": [], "questions": "not a list", "assumptions": []}
+    res = normalize_envelope("claude_ask", _env(inner), _meta(), detail="summary")
+    assert res["questions"] == []  # a stray string is ignored, not split into chars

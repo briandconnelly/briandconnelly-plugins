@@ -55,6 +55,7 @@ class Meta(BaseModel):
     truncated: bool = False
     truncation_hint: Optional[str] = None
     command_exit_code: Optional[int] = None
+    permission_denials: Optional[list] = None
     fingerprint: str = FINGERPRINT
 
 

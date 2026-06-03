@@ -44,3 +44,14 @@ def test_stage_env_file_redacted(git_repo):
     res = gather_context(str(git_repo), scope="working_tree", base="main")
     assert "hunter2" not in res.text
     assert "prod.env" in res.text
+
+
+def test_branch_base_rejects_option_like_ref(git_repo):
+    with pytest.raises(ValueError):
+        gather_context(str(git_repo), scope="branch", base="--output=/tmp/pwn")
+
+
+def test_diff_args_include_no_textconv():
+    from cc_plugin_codex.context import _diff_args
+    assert "--no-textconv" in _diff_args("working_tree", "main")
+    assert "--no-textconv" in _diff_args("staged", "main")

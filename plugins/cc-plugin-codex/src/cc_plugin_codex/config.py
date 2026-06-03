@@ -78,15 +78,16 @@ def bare_available() -> bool:
     return bool(os.environ.get("ANTHROPIC_API_KEY"))
 
 
-def config_mode_flags(mode: str, resume: bool) -> list[str]:
+def config_mode_flags(mode: str) -> list[str]:
+    # All modes drop the user's MCP fleet (a reviewer never needs it, and it is a
+    # side-effect vector). inherit/scoped keep the user's login; bare needs an API key.
     if mode == "inherit":
-        return [] if resume else ["--no-session-persistence"]
+        return ["--no-session-persistence",
+                "--strict-mcp-config", "--mcp-config", EMPTY_MCP]
     if mode == "scoped":
-        flags = ["--setting-sources", "project",
-                 "--strict-mcp-config", "--mcp-config", EMPTY_MCP]
-        if not resume:
-            flags.append("--no-session-persistence")
-        return flags
+        return ["--setting-sources", "project",
+                "--strict-mcp-config", "--mcp-config", EMPTY_MCP,
+                "--no-session-persistence"]
     if mode == "bare":
         return ["--bare", "--strict-mcp-config", "--mcp-config", EMPTY_MCP]
     raise ValueError(f"unsupported config_mode: {mode}")

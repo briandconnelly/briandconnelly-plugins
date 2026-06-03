@@ -2,22 +2,21 @@ import cc_plugin_codex.config as cfg
 
 
 def test_inherit_flags():
-    assert cfg.config_mode_flags("inherit", resume=False) == ["--no-session-persistence"]
-
-
-def test_inherit_flags_with_resume_drops_no_persistence():
-    assert cfg.config_mode_flags("inherit", resume=True) == []
+    f = cfg.config_mode_flags("inherit")
+    assert "--no-session-persistence" in f
+    assert "--strict-mcp-config" in f
+    assert '{"mcpServers":{}}' in f
 
 
 def test_scoped_flags():
-    f = cfg.config_mode_flags("scoped", resume=False)
+    f = cfg.config_mode_flags("scoped")
     assert "--setting-sources" in f and "project" in f
     assert "--strict-mcp-config" in f
     assert '{"mcpServers":{}}' in f
 
 
 def test_bare_flags():
-    f = cfg.config_mode_flags("bare", resume=False)
+    f = cfg.config_mode_flags("bare")
     assert "--bare" in f
     assert "--no-session-persistence" not in f
 

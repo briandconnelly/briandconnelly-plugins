@@ -3,21 +3,20 @@ from cc_plugin_codex.claude import build_command, classify_failure, ClaudeRun
 
 def test_build_command_toolless_inherit():
     cmd = build_command(prompt="hi", config_mode="inherit", access="toolless",
-                        model=None, max_budget_usd=1.0, resume_session=None)
+                        model=None, max_budget_usd=1.0)
     assert cmd[0] == "claude"
     assert "-p" in cmd and "--output-format" in cmd and "json" in cmd
     assert "--no-session-persistence" in cmd
     assert "--tools" in cmd
     assert "--append-system-prompt" in cmd
+    assert cmd[-2] == "--"
     assert cmd[-1] == "hi"  # prompt is the final positional arg
 
 
-def test_build_command_model_and_resume():
+def test_build_command_model():
     cmd = build_command(prompt="hi", config_mode="inherit", access="readonly",
-                        model="sonnet", max_budget_usd=2.0, resume_session="sess-1")
+                        model="sonnet", max_budget_usd=2.0)
     assert "--model" in cmd and "sonnet" in cmd
-    assert "--resume" in cmd and "sess-1" in cmd
-    assert "--no-session-persistence" not in cmd  # resume needs persistence
 
 
 def test_classify_not_logged_in():
@@ -59,6 +58,6 @@ def test_classify_generic_nonzero():
 
 def test_build_command_separates_prompt_with_double_dash():
     cmd = build_command(prompt="--model evil", config_mode="inherit", access="toolless",
-                        model=None, max_budget_usd=1.0, resume_session=None)
+                        model=None, max_budget_usd=1.0)
     assert cmd[-2] == "--"
     assert cmd[-1] == "--model evil"  # flag-looking prompt stays a positional

@@ -22,16 +22,14 @@ class ClaudeRun:
 
 
 def build_command(prompt: str, config_mode: str, access: str, model: str | None,
-                  max_budget_usd: float, resume_session: str | None) -> list[str]:
+                  max_budget_usd: float) -> list[str]:
     cmd = ["claude", "-p", "--output-format", "json"]
-    cmd += config_mode_flags(config_mode, resume=bool(resume_session))
+    cmd += config_mode_flags(config_mode)
     cmd += access_flags(access)
     cmd += ["--append-system-prompt", INDEPENDENT_CRITIC_PROMPT]
     cmd += ["--max-budget-usd", f"{max_budget_usd}"]
     if model:
         cmd += ["--model", model]
-    if resume_session:
-        cmd += ["--resume", resume_session]
     cmd += ["--", prompt]  # end-of-options separator, then the prompt as positional
     return cmd
 
