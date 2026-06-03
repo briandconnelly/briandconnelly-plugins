@@ -110,9 +110,11 @@ def normalize_envelope(tool: str, stdout: str, meta: Meta, detail: str,
                       repair="Retry; if it persists, reduce context size."), meta)
 
     if env.get("is_error") or env.get("subtype") not in (None, "success"):
+        detail = (env.get("result") or "").strip() or (env.get("subtype") or "unknown error")
         return _error(ErrorInfo(code="nonzero_exit",
-                      message=f"claude reported an error: {env.get('subtype')}",
-                      repair="Retry with a smaller request."), meta)
+                      message=f"claude reported an error: {detail[:200]}",
+                      repair="Inspect the error; retry with a smaller or corrected request."),
+                      meta)
 
     text = env.get("result", "") or ""
     raw = RawResponse(

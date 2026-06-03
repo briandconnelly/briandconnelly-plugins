@@ -51,6 +51,14 @@ def test_branch_base_rejects_option_like_ref(git_repo):
         gather_context(str(git_repo), scope="branch", base="--output=/tmp/pwn")
 
 
+def test_pem_file_redacted(git_repo):
+    (git_repo / "server.pem").write_text("-----BEGIN PRIVATE KEY-----\nDEADBEEF\n")
+    subprocess.run(["git", "add", "-Nf", "server.pem"], cwd=git_repo, check=True)
+    res = gather_context(str(git_repo), scope="working_tree", base="main")
+    assert "DEADBEEF" not in res.text
+    assert "server.pem" in res.text
+
+
 def test_diff_args_include_no_textconv():
     from cc_plugin_codex.context import _diff_args
     assert "--no-textconv" in _diff_args("working_tree", "main")

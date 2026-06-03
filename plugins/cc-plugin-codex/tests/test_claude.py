@@ -56,6 +56,14 @@ def test_classify_generic_nonzero():
     assert classify_failure(run).code == "nonzero_exit"
 
 
+def test_classify_budget_from_envelope_subtype():
+    import json
+    stdout = json.dumps({"type": "result", "is_error": True,
+                         "subtype": "error_max_budget_usd", "result": ""})
+    run = ClaudeRun(stdout=stdout, stderr="", exit_code=1, elapsed_ms=5, timed_out=False)
+    assert classify_failure(run).code == "budget_exceeded"
+
+
 def test_build_command_separates_prompt_with_double_dash():
     cmd = build_command(prompt="--model evil", config_mode="inherit", access="toolless",
                         model=None, max_budget_usd=1.0)

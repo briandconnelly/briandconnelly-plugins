@@ -109,6 +109,15 @@ def test_normalize_denials_recorded_on_success():
     assert res["meta"]["permission_denials"] == [{"tool": "Bash"}]
 
 
+def test_normalize_is_error_uses_result_text_not_subtype():
+    env = _env("", is_error=True, subtype="success", result="Rate limited; try later.")
+    res = normalize_envelope("claude_ask", env, _meta(), detail="summary")
+    assert res["ok"] is False
+    assert res["error"]["code"] == "nonzero_exit"
+    assert "Rate limited" in res["error"]["message"]
+    assert "success" not in res["error"]["message"]
+
+
 def test_normalize_string_questions_not_exploded():
     inner = {"summary": "x", "verdict": "pass", "confidence": "high",
              "findings": [], "questions": "not a list", "assumptions": []}

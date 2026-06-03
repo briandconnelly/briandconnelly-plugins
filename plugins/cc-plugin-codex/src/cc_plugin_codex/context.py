@@ -77,12 +77,12 @@ def _redact(diff: str) -> tuple[str, list[str]]:
     skipping = False
     for line in diff.splitlines():
         if line.startswith("diff --git "):
-            path = line.split(" b/")[-1] if " b/" in line else ""
-            skipping = bool(SECRET_PATH_RE.search(path))
+            spec = line[len("diff --git "):]  # "a/<path> b/<path>" (paths may be quoted)
+            skipping = bool(SECRET_PATH_RE.search(spec))
             if skipping:
-                redacted.append(path)
-                out_lines.append(f"diff --git a/{path} b/{path}")
-                out_lines.append(f"[redacted: {path} — secret-looking file not sent]")
+                redacted.append(spec)
+                out_lines.append(line)  # keep the real header so reviewers see the file
+                out_lines.append("[redacted: secret-looking file not sent]")
                 continue
         if not skipping:
             out_lines.append(line)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import time
 from dataclasses import dataclass
@@ -50,7 +51,13 @@ def run_claude(cmd: list[str], cwd: str, timeout_seconds: int) -> ClaudeRun:
 
 
 def classify_failure(run: ClaudeRun) -> ErrorInfo:
-    blob = f"{run.stdout}\n{run.stderr}".lower()
+    extra = ""
+    try:
+        env = json.loads(run.stdout)
+        extra = f"{env.get('subtype', '')} {env.get('result', '')}"
+    except (json.JSONDecodeError, ValueError, TypeError):
+        pass
+    blob = f"{extra}\n{run.stdout}\n{run.stderr}".lower()
     if run.stderr == "claude_not_found":
         return ErrorInfo(code="claude_not_found",
                          message="The `claude` CLI was not found on PATH.",

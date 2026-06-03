@@ -18,7 +18,8 @@ def test_scoped_flags():
 def test_bare_flags():
     f = cfg.config_mode_flags("bare")
     assert "--bare" in f
-    assert "--no-session-persistence" not in f
+    assert "--no-session-persistence" in f
+    assert "--strict-mcp-config" in f
 
 
 def test_access_flags():

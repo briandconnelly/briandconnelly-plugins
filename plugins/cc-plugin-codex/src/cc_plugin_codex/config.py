@@ -89,7 +89,8 @@ def config_mode_flags(mode: str) -> list[str]:
                 "--strict-mcp-config", "--mcp-config", EMPTY_MCP,
                 "--no-session-persistence"]
     if mode == "bare":
-        return ["--bare", "--strict-mcp-config", "--mcp-config", EMPTY_MCP]
+        return ["--bare", "--no-session-persistence",
+                "--strict-mcp-config", "--mcp-config", EMPTY_MCP]
     raise ValueError(f"unsupported config_mode: {mode}")
 
 
