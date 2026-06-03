@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cc-plugin-codex": {
+      "command": "uv",
+      "args": ["run", "--directory", "/Users/bdc/projects/briandconnelly-plugins/plugins/cc-plugin-codex", "cc-plugin-codex-mcp"]
+    }
+  }
+}
