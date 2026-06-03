@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 from typing import Literal, Optional
+from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter
 
-FINGERPRINT = "cc-plugin-codex/0.1/schema-1"
+# Bump this whenever the agent-visible surface changes: tool names, input or
+# output schemas, the ErrorCode set, the config_mode/access/scope/detail value
+# sets, or the capability guarantees in CAPABILITY_SUMMARY. Clients cache by it.
+FINGERPRINT = "cc-plugin-codex/0.1/schema-2"
 
 Severity = Literal["critical", "high", "medium", "low", "nit"]
 Verdict = Literal["pass", "concerns", "fail", "unknown"]
 Confidence = Literal["low", "medium", "high"]
 ConfigMode = Literal["inherit", "scoped", "bare"]
 Access = Literal["toolless", "readonly"]
+Scope = Literal["working_tree", "staged", "branch"]
+Detail = Literal["summary", "full"]
 
 ErrorCode = Literal[
     "claude_not_found", "claude_auth_required", "api_key_required",
@@ -56,6 +62,7 @@ class Meta(BaseModel):
     truncation_hint: Optional[str] = None
     command_exit_code: Optional[int] = None
     permission_denials: Optional[list] = None
+    request_id: str = Field(default_factory=lambda: uuid4().hex)
     fingerprint: str = FINGERPRINT
 
 
@@ -79,10 +86,54 @@ class ErrorInfo(BaseModel):
     repair: str
     offending_param: Optional[str] = None
     retryable: bool = False
-    retry_after_ms: Optional[int] = None
 
 
 class ErrorResult(BaseModel):
     ok: Literal[False] = False
     error: ErrorInfo
     meta: Meta
+
+
+class ResolvedDefaults(BaseModel):
+    config_mode: ConfigMode
+    access: Access
+    model: Optional[str] = None
+    max_budget_usd: float
+    timeout_seconds: int
+    budget_bounds: list[float]   # [min, max] clamp range for max_budget_usd
+    timeout_bounds: list[int]    # [min, max] clamp range for timeout_seconds
+
+
+class StatusResult(BaseModel):
+    ok: Literal[True] = True
+    claude_found: bool
+    claude_version: Optional[str] = None
+    config_modes_available: dict
+    resolved_defaults: ResolvedDefaults
+    caveat: str
+    fingerprint: str = FINGERPRINT
+
+
+def _object_union_schema(adapter: TypeAdapter) -> dict:
+    """Wrap a model union's anyOf in a top-level object schema.
+
+    MCP/FastMCP require an output schema whose top level is ``type: object``;
+    a bare ``anyOf`` is rejected. We keep the discriminating ``ok`` key visible
+    at the top and carry the full branch schemas (and their $defs) underneath.
+    """
+    union = adapter.json_schema()
+    return {
+        "type": "object",
+        "properties": {
+            "ok": {"type": "boolean",
+                   "description": "true = success result, false = error result"},
+        },
+        "required": ["ok"],
+        "anyOf": union["anyOf"],
+        "$defs": union.get("$defs", {}),
+    }
+
+
+# Advertised output schemas (convention: a discriminated ok:true|false union).
+RESULT_SCHEMA = _object_union_schema(TypeAdapter(SuccessResult | ErrorResult))
+STATUS_SCHEMA = StatusResult.model_json_schema()

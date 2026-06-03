@@ -9,6 +9,19 @@ An MCP server wraps the `claude` CLI and exposes four read-only tools to Codex:
 `claude_ask`, `claude_review_changes`, `claude_adversarial_review`, `claude_status`.
 Claude reviews; it never edits your code.
 
+Each tool publishes an output schema describing the `ok`-discriminated result
+(`{"ok": true, ...}` on success, `{"ok": false, "error": {code, message, repair}, ...}`
+on failure). Failures also set the MCP `isError` flag, so branch on either `ok` or
+`isError`. The surface is **experimental / pre-1.0**; clients should pin
+`meta.fingerprint` to detect schema changes.
+
+The paid tools (`claude_ask`, `claude_review_changes`, `claude_adversarial_review`)
+**block synchronously** for up to `timeout_seconds` (default 180s, max 600s) and
+**cannot be cancelled or resumed** once started. Call `claude_status` first — it is
+free and reports the resolved defaults (`config_mode`, `access`, `model`, clamped
+`max_budget_usd`/`timeout_seconds`, and the clamp bounds) a no-argument paid call
+would use, so you can predict cost and behavior before spending.
+
 ## Requirements
 
 - The `claude` CLI installed and authenticated (`claude /login`), and `git`.
