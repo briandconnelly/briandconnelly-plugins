@@ -42,6 +42,12 @@ to pull extra context. Claude never gets write or Bash tools.
 - Read-only: Claude is never given write or Bash tools.
 - Secret redaction is filename-based (`.env`, `*.env`, `*.pem`, `*.key`, key files), not
   content-scanning — it will not catch secrets hardcoded inside ordinary source files.
+- Diff redaction only applies to the context the server gathers. With `access=readonly`,
+  Claude can read any file in the workspace directly (`Read`/`Grep`/`Glob`), so redaction
+  does NOT protect against secrets it reads itself — use `access=toolless` (the default)
+  when the workspace may contain secrets.
+- All `config_mode`s drop your other MCP servers, but `inherit`/`scoped` still load your
+  user-level Claude hooks and settings; use `config_mode=bare` for full isolation.
 - Each call is paid and sends code to Anthropic; the server caps cost and time per call.
 
 ## Environment variables
