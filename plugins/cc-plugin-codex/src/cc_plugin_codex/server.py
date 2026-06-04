@@ -131,6 +131,14 @@ def _workspace_error(code: str, workspace_root: str | None = None) -> dict:
             meta,
             offending="workspace_root",
         )
+    if workspace_root is None:
+        return _err(
+            code,
+            "The resolved workspace is not an existing absolute directory.",
+            "Pass workspace_root as an absolute path to an existing directory, "
+            "or configure an MCP root that points at an existing directory.",
+            meta,
+        )
     return _err(
         code,
         f"workspace_root '{workspace_root}' is not an existing absolute directory.",

@@ -40,7 +40,7 @@ async def test_first_root_skips_non_file_uris():
 async def test_resolve_workspace_param_inside_root_beats_root_default(tmp_path):
     child = tmp_path / "repo"
     child.mkdir()
-    ctx = _FakeRoots([f"file://{tmp_path}"])
+    ctx = _FakeRoots([tmp_path.as_uri()])
     path, err, source = await _resolve_workspace(str(child), ctx)
     assert err is None
     assert path == str(child)
@@ -48,7 +48,7 @@ async def test_resolve_workspace_param_inside_root_beats_root_default(tmp_path):
 
 
 async def test_resolve_workspace_uses_roots_when_no_param(tmp_path):
-    ctx = _FakeRoots([f"file://{tmp_path}"])
+    ctx = _FakeRoots([tmp_path.as_uri()])
     path, err, source = await _resolve_workspace(None, ctx)
     assert err is None
     assert path == str(tmp_path)
@@ -60,7 +60,7 @@ async def test_resolve_workspace_param_must_be_inside_roots(tmp_path):
     root.mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
-    ctx = _FakeRoots([f"file://{root}"])
+    ctx = _FakeRoots([root.as_uri()])
     path, err, source = await _resolve_workspace(str(outside), ctx)
     assert path is None
     assert err == "workspace_outside_roots"
@@ -71,7 +71,7 @@ async def test_resolve_workspace_param_inside_roots_allowed(tmp_path):
     root = tmp_path / "root"
     child = root / "repo"
     child.mkdir(parents=True)
-    ctx = _FakeRoots([f"file://{root}"])
+    ctx = _FakeRoots([root.as_uri()])
     path, err, source = await _resolve_workspace(str(child), ctx)
     assert err is None
     assert path == str(child)
@@ -404,6 +404,18 @@ async def test_review_invalid_workspace_root_is_structured_error(fake_claude):
     assert data["ok"] is False
     assert data["error"]["code"] == "invalid_workspace_root"
     assert data["error"]["offending_param"] == "workspace_root"
+
+
+async def test_review_invalid_root_without_param_does_not_blame_workspace_root(fake_claude, tmp_path):
+    missing = tmp_path / "missing"
+    async with Client(mcp, roots=[missing.as_uri()]) as client:
+        result = await client.call_tool(
+            "claude_review_changes", {"scope": "working_tree"}, raise_on_error=False)
+    data = structured(result)
+    assert data["ok"] is False
+    assert data["error"]["code"] == "invalid_workspace_root"
+    assert "offending_param" not in data["error"]
+    assert "workspace_root 'None'" not in data["error"]["message"]
 
 
 async def test_review_workspace_outside_roots_is_structured_error(fake_claude, tmp_path):
