@@ -15,6 +15,7 @@ from fastmcp import Context, FastMCP
 from fastmcp.tools.tool import ToolResult
 from pydantic import Field
 
+from cc_plugin_codex import __version__
 from cc_plugin_codex.claude import (
     auth_status, build_command, classify_failure, run_claude_async,
 )
@@ -688,7 +689,7 @@ def cc_codex_capabilities() -> ToolResult:
     """
     result = CapabilitiesResult(
         name="cc-plugin-codex",
-        version="0.1.0",
+        version=__version__,
         transport="stdio",
         stability="experimental",
         paid_tools=["claude_ask", "claude_review_changes", "claude_adversarial_review",
