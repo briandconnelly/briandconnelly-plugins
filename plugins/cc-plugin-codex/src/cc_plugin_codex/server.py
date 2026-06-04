@@ -25,29 +25,31 @@ from cc_plugin_codex.config import (
     sanitize_effort, version_supported,
 )
 from cc_plugin_codex.context import (
-    InvalidBaseError, InvalidScopeError, gather_context,
+    MAX_DIFF_BYTES, InvalidBaseError, InvalidScopeError, gather_context,
 )
 from cc_plugin_codex import jobs
 from cc_plugin_codex.jobs import JobConfig
 from cc_plugin_codex.normalize import apply_cost_usage, build_prompt, normalize_envelope
 from cc_plugin_codex.schemas import (
-    CAPABILITIES_SCHEMA, FINGERPRINT, JOB_STARTED_SCHEMA, JOB_STATUS_SCHEMA,
-    RESULT_SCHEMA, STATUS_SCHEMA,
-    Access, CapabilitiesResult, ConfigMode, Detail, Effort,
+    CAPABILITIES_SCHEMA, DRY_RUN_SCHEMA, FINGERPRINT, JOB_LIST_SCHEMA,
+    JOB_STARTED_SCHEMA, JOB_STATUS_SCHEMA, RESULT_SCHEMA, STATUS_SCHEMA,
+    Access, CapabilitiesResult, ConfigMode, Detail, DryRunResult, Effort,
     ErrorInfo, ErrorResult, JobStarted, Meta, ResolvedDefaults, Scope, StatusResult,
+    workspace_warning_for,
 )
 
 CAPABILITY_SUMMARY = (
     "cc-plugin-codex lets Codex ask Claude Code for bounded, independent critique: "
     "diff reviews, adversarial plan review, and second opinions. It never edits code, "
-    "runs shell, or proxies Claude MCP tools. Paid tools send prompt/code context to "
-    "Anthropic; call claude_status before spending to check CLI/auth/defaults. Use "
-    "claude_review_changes for blocking diff review and claude_review_changes_async "
-    "for background review with poll/result/cancel. Findings are advisory claims to "
-    "verify. workspace_root defaults to the first MCP root, then cwd; when roots are "
-    "available, explicit workspace_root must be inside one root. Use access=toolless "
-    "by default; access=readonly lets Claude read workspace files directly. The "
-    "surface is experimental; pin fingerprint from cc_codex_capabilities."
+    "runs shell, or proxies Claude MCP tools. Paid tools send code context to "
+    "Anthropic; call claude_status before spending. claude_review_changes blocks; "
+    "claude_review_changes_async runs in background with poll/result/cancel; "
+    "claude_review_dry_run previews workspace/diff-size/redaction for free. Findings "
+    "are advisory claims to verify. Pass workspace_root explicitly: it defaults to "
+    "the first MCP root, else the server's own cwd (likely NOT your repo); when roots "
+    "exist it must be inside one. access=toolless is the default; access=readonly "
+    "lets Claude read files directly, bypassing filename-based secret redaction. "
+    "Experimental; pin fingerprint from cc_codex_capabilities."
 )
 
 mcp = FastMCP(name="cc-plugin-codex", instructions=CAPABILITY_SUMMARY)
@@ -84,11 +86,14 @@ def _result(payload: dict) -> ToolResult:
 def _meta(cwd: str, config_mode: str, access: str, timeout: int, elapsed: int,
           exit_code: int | None, scope: str | None = None, base: str | None = None,
           truncated: bool = False, hint: str | None = None,
-          workspace_source: str | None = None) -> Meta:
+          workspace_source: str | None = None,
+          requested_budget: float | None = None) -> Meta:
     return Meta(cwd=cwd, config_mode=config_mode, access=access, scope=scope, base=base,
                 timeout_seconds=timeout, elapsed_ms=elapsed, command_exit_code=exit_code,
                 truncated=truncated, truncation_hint=hint, fingerprint=FINGERPRINT,
-                workspace_source=workspace_source)
+                workspace_source=workspace_source,
+                workspace_warning=workspace_warning_for(workspace_source, cwd),
+                requested_max_budget_usd=requested_budget)
 
 
 def _err(code: str, message: str, repair: str, meta: Meta,
@@ -212,18 +217,19 @@ def _resolve(config_mode, access, model, max_budget_usd, timeout_seconds, detail
     # would raise Pydantic errors before we can return a structured response).
     if cm not in ("inherit", "scoped", "bare"):
         safe_meta = _meta(cwd, "inherit", ac if ac in ("toolless", "readonly") else "toolless",
-                          timeout, 0, None, scope, base, workspace_source=workspace_source)
+                          timeout, 0, None, scope, base, workspace_source=workspace_source,
+                          requested_budget=budget)
         return None, _err("unsupported_config_mode", f"Unknown config_mode '{cm}'.",
                           "Use one of: inherit, scoped, bare.", safe_meta,
                           offending="config_mode")
     if ac not in ("toolless", "readonly"):
         safe_meta = _meta(cwd, cm, "toolless", timeout, 0, None, scope, base,
-                          workspace_source=workspace_source)
+                          workspace_source=workspace_source, requested_budget=budget)
         return None, _err("unsupported_access", f"Unknown access '{ac}'.",
                           "Use one of: toolless, readonly.", safe_meta, offending="access")
 
     meta = _meta(cwd, cm, ac, timeout, 0, None, scope, base,
-                 workspace_source=workspace_source)
+                 workspace_source=workspace_source, requested_budget=budget)
     if cm == "bare" and not bare_available():
         return None, _err("api_key_missing",
                           "config_mode=bare requires ANTHROPIC_API_KEY, which is unset.",
@@ -239,7 +245,7 @@ async def _execute(tool, payload, r: Resolved, cwd,
     cmd = build_command(prompt, r.config_mode, r.access, r.model, r.budget, r.effort)
     run = await run_claude_async(cmd, cwd=cwd, timeout_seconds=r.timeout)
     meta = _meta(cwd, r.config_mode, r.access, r.timeout, run.elapsed_ms, run.exit_code,
-                 scope, base, workspace_source=workspace_source)
+                 scope, base, workspace_source=workspace_source, requested_budget=r.budget)
     if run.exit_code != 0 or run.timed_out:
         # A non-zero exit can still carry a cost-bearing JSON envelope (e.g.
         # budget_exceeded); report what it spent when available.
@@ -336,7 +342,7 @@ async def claude_review_changes(
     if err:
         return _result(err)
     meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
-                 workspace_source=ws_source)
+                 workspace_source=ws_source, requested_budget=r.budget)
     try:
         ctx_data = await anyio.to_thread.run_sync(
             lambda: gather_context(cwd, scope=scope, base=base))
@@ -352,7 +358,8 @@ async def claude_review_changes(
                        "Ensure cwd is a git repo and base ref exists.", meta))
     if ctx_data.truncated:
         meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
-                     truncated=True, hint=ctx_data.truncation_hint, workspace_source=ws_source)
+                     truncated=True, hint=ctx_data.truncation_hint, workspace_source=ws_source,
+                     requested_budget=r.budget)
         return _result(_err("context_too_large", "The diff is too large to review safely.",
                        ctx_data.truncation_hint or "Narrow the scope.", meta))
     out = await _execute(
@@ -436,7 +443,8 @@ async def claude_adversarial_review(
 
 
 # Starting a background job commits to spend (the job runs to completion or its
-# budget cap even if never polled), but returns immediately without blocking.
+# best-effort budget stop threshold even if never polled), but returns immediately
+# without blocking.
 _ASYNC_START_ANNOTATIONS = {
     "readOnlyHint": False, "openWorldHint": True,
     "destructiveHint": False, "idempotentHint": False,
@@ -482,7 +490,7 @@ async def claude_review_changes_async(
     # timeout_seconds; report that everywhere so meta stays consistent with the job.
     job_timeout = jobs.max_seconds()
     meta = _meta(cwd, r.config_mode, r.access, job_timeout, 0, None, scope, base,
-                 workspace_source=ws_source)
+                 workspace_source=ws_source, requested_budget=r.budget)
     try:
         ctx_data = await anyio.to_thread.run_sync(
             lambda: gather_context(cwd, scope=scope, base=base))
@@ -498,7 +506,8 @@ async def claude_review_changes_async(
                        "Ensure cwd is a git repo and base ref exists.", meta))
     if ctx_data.truncated:
         meta = _meta(cwd, r.config_mode, r.access, job_timeout, 0, None, scope, base,
-                     truncated=True, hint=ctx_data.truncation_hint, workspace_source=ws_source)
+                     truncated=True, hint=ctx_data.truncation_hint, workspace_source=ws_source,
+                     requested_budget=r.budget)
         return _result(_err("context_too_large", "The diff is too large to review safely.",
                        ctx_data.truncation_hint or "Narrow the scope.", meta))
     prompt = build_prompt("claude_review_changes",
@@ -507,7 +516,7 @@ async def claude_review_changes_async(
     cfg = JobConfig(kind="claude_review_changes", config_mode=r.config_mode,
                     access=r.access, scope=scope, base=base, detail=r.detail,
                     timeout_seconds=jobs.max_seconds(), workspace_source=ws_source,
-                    context_summary=ctx_data.summary)
+                    context_summary=ctx_data.summary, requested_max_budget_usd=r.budget)
     job_id, started_at = await anyio.to_thread.run_sync(
         lambda: jobs.start_job(cmd, cwd, cfg))
     started = JobStarted(
@@ -516,7 +525,7 @@ async def claude_review_changes_async(
         poll_after_ms=jobs.poll_after_ms(),
         ttl_seconds=jobs.ttl_seconds(),
         meta=_meta(cwd, r.config_mode, r.access, job_timeout, 0, None, scope, base,
-                   workspace_source=ws_source),
+                   workspace_source=ws_source, requested_budget=r.budget),
     )
     return _result(started.model_dump(mode="json", exclude_none=True))
 
@@ -627,6 +636,75 @@ async def claude_job_cancel(
     return _result(data)
 
 
+@mcp.tool(annotations=_FREE_READ_ANNOTATIONS, title="Preview review context (no spend)",
+          output_schema=DRY_RUN_SCHEMA)
+async def claude_review_dry_run(
+    scope: Annotated[Scope, Field(description="working_tree|staged|branch")],
+    base: Annotated[str, Field(description="Base ref for scope=branch.")] = "main",
+    workspace_root: Annotated[Optional[str], Field(
+        description="Absolute path to the repo/workspace. If omitted, the server "
+        "uses the client's first MCP root, else its own cwd.")] = None,
+    ctx: Context = None,
+) -> ToolResult:
+    """Preview what a diff review WOULD send, free and without calling Claude.
+
+    Use before a paid claude_review_changes to confirm the resolved workspace,
+    diff byte size, whether it would be truncated, and how many secret-looking
+    files would be redacted. Read-only; makes no paid call.
+    """
+    cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
+    if ws_err:
+        return _result(_workspace_error(ws_err, workspace_root))
+    meta = _meta(cwd, "inherit", "toolless", 0, 0, None, scope, base,
+                 workspace_source=ws_source)
+    try:
+        ctx_data = await anyio.to_thread.run_sync(
+            lambda: gather_context(cwd, scope=scope, base=base))
+    except InvalidBaseError:
+        return _result(_err("invalid_base", f"Invalid base ref '{base}'.",
+                       "Use an existing git ref matching [A-Za-z0-9._/-]+ that does "
+                       "not start with '-'.", meta, offending="base"))
+    except InvalidScopeError:
+        return _result(_err("invalid_scope", f"Invalid scope '{scope}'.",
+                       "Use working_tree, staged, or branch.", meta, offending="scope"))
+    except RuntimeError as e:
+        return _result(_err("internal_error", f"git failed: {e}",
+                       "Ensure cwd is a git repo and base ref exists.", meta))
+    result = DryRunResult(
+        cwd=cwd, workspace_source=ws_source,
+        workspace_warning=workspace_warning_for(ws_source, cwd),
+        scope=scope, base=base,
+        context_summary=ctx_data.summary,
+        diff_bytes=ctx_data.diff_bytes,
+        max_diff_bytes=MAX_DIFF_BYTES,
+        truncated=ctx_data.truncated,
+        truncation_hint=ctx_data.truncation_hint,
+        redacted_paths_count=len(ctx_data.redacted_paths),
+        redacted_paths=ctx_data.redacted_paths,
+    )
+    return _result(result.model_dump(mode="json", exclude_none=True))
+
+
+@mcp.tool(annotations=_LOCAL_MUTATION_ANNOTATIONS, title="List background jobs",
+          output_schema=JOB_LIST_SCHEMA)
+async def claude_job_list(
+    workspace_root: Annotated[Optional[str], Field(
+        description="Workspace whose jobs to list (defaults like the async tools).")] = None,
+    ctx: Context = None,
+) -> ToolResult:
+    """List the background review jobs known for this workspace, newest first.
+
+    Use to recover job_ids lost across context compaction or interruption. Returns
+    each job's id, kind, status, start time, result_available, expiry, and cost when
+    terminal. Like the other lifecycle tools it refreshes statuses (not read-only).
+    """
+    cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
+    if ws_err:
+        return _result(_workspace_error(ws_err, workspace_root))
+    data = await anyio.to_thread.run_sync(lambda: jobs.list_jobs(cwd))
+    return _result(data)
+
+
 @mcp.tool(annotations=_FREE_READ_ANNOTATIONS, title="Claude CLI status & defaults",
           output_schema=STATUS_SCHEMA)
 def claude_status() -> ToolResult:
@@ -678,15 +756,9 @@ def claude_status() -> ToolResult:
     return _result(status.model_dump(mode="json", exclude_none=True))
 
 
-@mcp.tool(annotations=_FREE_READ_ANNOTATIONS, title="cc-plugin-codex capabilities",
-          output_schema=CAPABILITIES_SCHEMA)
-def cc_codex_capabilities() -> ToolResult:
-    """Return the compact capability contract for this server.
-
-    Free and read-only. Call first when unsure which tool to use. Includes tool
-    inventory, scope/negative-scope, prerequisites, modes, deprecation policy, and
-    fingerprint.
-    """
+def _capabilities_payload() -> dict:
+    """Build the capability contract. Shared by cc_codex_capabilities and its
+    claude_capabilities alias so the two tools cannot drift."""
     result = CapabilitiesResult(
         name="cc-plugin-codex",
         version=__version__,
@@ -694,9 +766,9 @@ def cc_codex_capabilities() -> ToolResult:
         stability="experimental",
         paid_tools=["claude_ask", "claude_review_changes", "claude_adversarial_review",
                     "claude_review_changes_async"],
-        free_tools=["claude_status", "cc_codex_capabilities", "claude_job_status",
-                    "claude_job_result", "claude_job_consume_result",
-                    "claude_job_cancel"],
+        free_tools=["claude_status", "cc_codex_capabilities", "claude_capabilities",
+                    "claude_review_dry_run", "claude_job_status", "claude_job_result",
+                    "claude_job_consume_result", "claude_job_cancel", "claude_job_list"],
         config_modes=["inherit", "scoped", "bare"],
         access_modes=["toolless", "readonly"],
         scope=[
@@ -704,12 +776,15 @@ def cc_codex_capabilities() -> ToolResult:
             "adversarial review of a plan/claim",
             "a free-form independent second opinion",
             "background diff review with poll/result/cancel for long runs",
+            "a free dry-run preview of workspace, diff size, and redaction before paying",
         ],
         negative_scope=[
             "does NOT edit code or run shell",
             "does NOT act as a general Claude chat",
             "does NOT proxy Claude's own MCP tools",
             "does NOT resume a call once it ends or is cancelled",
+            "does NOT content-scan for secrets; with access=readonly Claude can read "
+            "workspace files directly, bypassing filename-based redaction",
         ],
         prerequisites=[
             "the `claude` CLI installed and authenticated",
@@ -722,7 +797,30 @@ def cc_codex_capabilities() -> ToolResult:
             "bump the fingerprint."
         ),
     )
-    return _result(result.model_dump(mode="json", exclude_none=True))
+    return result.model_dump(mode="json", exclude_none=True)
+
+
+@mcp.tool(annotations=_FREE_READ_ANNOTATIONS, title="cc-plugin-codex capabilities",
+          output_schema=CAPABILITIES_SCHEMA)
+def cc_codex_capabilities() -> ToolResult:
+    """Return the compact capability contract for this server.
+
+    Free and read-only. Call first when unsure which tool to use. Includes tool
+    inventory, scope/negative-scope, prerequisites, modes, deprecation policy, and
+    fingerprint. Also available as claude_capabilities.
+    """
+    return _result(_capabilities_payload())
+
+
+@mcp.tool(annotations=_FREE_READ_ANNOTATIONS, title="Claude review capabilities",
+          output_schema=CAPABILITIES_SCHEMA)
+def claude_capabilities() -> ToolResult:
+    """Alias of cc_codex_capabilities: the Claude review/critique capability contract.
+
+    Free and read-only. Discoverable under a claude_* name; returns the identical
+    contract as cc_codex_capabilities.
+    """
+    return _result(_capabilities_payload())
 
 
 @mcp.resource("cc-plugin-codex://capabilities")

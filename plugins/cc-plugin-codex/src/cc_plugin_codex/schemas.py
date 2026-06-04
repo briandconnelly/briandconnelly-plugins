@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 # Bump this whenever the agent-visible surface changes: tool names, input or
 # output schemas, the ErrorCode set, the config_mode/access/scope/detail value
 # sets, or the capability guarantees in CAPABILITY_SUMMARY. Clients cache by it.
-FINGERPRINT = "cc-plugin-codex/0.1/schema-8"
+FINGERPRINT = "cc-plugin-codex/0.1/schema-9"
 
 Severity = Literal["critical", "high", "medium", "low", "nit"]
 Verdict = Literal["pass", "concerns", "fail", "unknown"]
@@ -23,6 +23,21 @@ Effort = Literal["low", "medium", "high", "xhigh", "max"]
 # Lifecycle states for a background job. Terminal: done|failed|cancelled|timeout.
 # (TTL-expired records are deleted and reported as job_not_found, not a state.)
 JobState = Literal["running", "done", "failed", "cancelled", "timeout"]
+
+
+def workspace_warning_for(source: str | None, cwd: str) -> str | None:
+    """Warning when the workspace was resolved from the server's own cwd.
+
+    The MCP server process launches from its install directory, so a cwd-resolved
+    workspace silently reviews the wrong repo. Surfacing this (rather than failing)
+    lets agents notice and pass workspace_root without breaking existing callers.
+    Shared by the sync meta builder and the background-job meta rebuild so the two
+    paths cannot drift."""
+    if source == "cwd":
+        return (f"workspace resolved from the server's own cwd ({cwd}); pass "
+                "workspace_root (or configure an MCP root) to be sure the review "
+                "targets the intended repository")
+    return None
 
 ErrorCode = Literal[
     "claude_not_found", "claude_auth_required", "api_key_missing", "api_key_invalid",
@@ -73,12 +88,17 @@ class Meta(BaseModel):
     model_config = ConfigDict(extra="forbid")
     cwd: str
     workspace_source: Optional[str] = None   # how cwd was resolved: param|roots|cwd
+    workspace_warning: Optional[str] = None   # set when cwd was resolved from server cwd
     config_mode: ConfigMode
     access: Access
     scope: Optional[str] = None
     base: Optional[str] = None
     timeout_seconds: int
     elapsed_ms: int
+    # The effective (env-defaulted + clamped) value passed to claude as
+    # --max-budget-usd. It is a best-effort stop threshold, not a hard cap; compare
+    # against cost_usd to see how close actual spend came.
+    requested_max_budget_usd: Optional[float] = None
     truncated: bool = False
     truncation_hint: Optional[str] = None
     command_exit_code: Optional[int] = None
@@ -203,6 +223,46 @@ class JobStatus(BaseModel):
     fingerprint: str = FINGERPRINT
 
 
+class DryRunResult(BaseModel):
+    """Free preview of what a diff review WOULD send — no Claude call, no spend."""
+    model_config = ConfigDict(extra="forbid")
+    ok: Literal[True] = True
+    tool: Literal["claude_review_dry_run"] = "claude_review_dry_run"
+    cwd: str
+    workspace_source: Optional[str] = None
+    workspace_warning: Optional[str] = None
+    scope: str
+    base: Optional[str] = None
+    context_summary: ContextSummary
+    diff_bytes: int              # full UTF-8 size of the redacted diff that would be sent
+    max_diff_bytes: int          # the server's truncation threshold
+    truncated: bool = False      # true when diff_bytes > max_diff_bytes
+    truncation_hint: Optional[str] = None
+    redacted_paths_count: int = 0
+    redacted_paths: list[str] = Field(default_factory=list)
+    fingerprint: str = FINGERPRINT
+
+
+class JobSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    job_id: str
+    kind: str
+    status: JobState
+    started_at: str
+    elapsed_ms: int
+    result_available: bool = False
+    expires_at: Optional[str] = None
+    cost_usd: Optional[float] = None
+
+
+class JobListResult(BaseModel):
+    """Returned by claude_job_list: the workspace's known jobs, newest first."""
+    model_config = ConfigDict(extra="forbid")
+    ok: Literal[True] = True
+    jobs: list[JobSummary] = Field(default_factory=list)
+    fingerprint: str = FINGERPRINT
+
+
 def _object_union_schema(adapter: TypeAdapter) -> dict:
     """Wrap a model union's anyOf in a top-level object schema.
 
@@ -231,3 +291,6 @@ CAPABILITIES_SCHEMA = CapabilitiesResult.model_json_schema()
 # the start tools advertise the JobStarted|ErrorResult union.
 JOB_STARTED_SCHEMA = _object_union_schema(TypeAdapter(JobStarted | ErrorResult))
 JOB_STATUS_SCHEMA = _object_union_schema(TypeAdapter(JobStatus | ErrorResult))
+# Dry-run and job-list can fail (bad scope/base/workspace), so advertise the union.
+DRY_RUN_SCHEMA = _object_union_schema(TypeAdapter(DryRunResult | ErrorResult))
+JOB_LIST_SCHEMA = _object_union_schema(TypeAdapter(JobListResult | ErrorResult))

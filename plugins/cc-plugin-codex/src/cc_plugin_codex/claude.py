@@ -49,14 +49,19 @@ def auth_status(timeout_seconds: int = 10) -> tuple[bool | None, str | None]:
 
     Returns (logged_in, detail). logged_in is None when the probe could not run
     (claude missing, timeout) so callers can report 'unknown' rather than a
-    misleading False."""
+    misleading False. detail is a NON-identifying phrase, never the raw CLI output:
+    `claude auth status` prints the account email and organization, which would leak
+    into shared logs/transcripts. The boolean already carries the machine-readable
+    truth, so we deliberately drop the raw text."""
     try:
         proc = subprocess.run(["claude", "auth", "status", "--text"],
                               capture_output=True, text=True, timeout=timeout_seconds)
     except (OSError, subprocess.SubprocessError):
         return None, None
-    detail = (proc.stdout or proc.stderr).strip() or None
-    return proc.returncode == 0, detail
+    logged_in = proc.returncode == 0
+    detail = ("Claude CLI reports an authenticated session." if logged_in
+              else "Claude CLI reports no authenticated session; run `claude /login`.")
+    return logged_in, detail
 
 
 def _kill_process_tree(proc: subprocess.Popen) -> None:
@@ -141,7 +146,8 @@ def classify_failure(run: ClaudeRun) -> ErrorInfo:
                          repair="Run `claude /login`.")
     if "budget" in blob:
         return ErrorInfo(code="budget_exceeded",
-                         message="claude hit the max-budget cap.",
+                         message="claude reached the max-budget stop threshold "
+                                 "(a best-effort limit, not a hard cap).",
                          repair="Raise max_budget_usd or reduce context.",
                          retryable=True)
     return ErrorInfo(code="nonzero_exit",

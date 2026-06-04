@@ -82,6 +82,43 @@ def test_job_done_returns_normalized_result(tmp_path):
     assert payload["meta"]["cost_usd"] == 0.0123
 
 
+def test_job_meta_carries_requested_budget_and_warning(tmp_path):
+    cwd = str(tmp_path)
+    job_id, _ = jobs.start_job(
+        _emit_cmd(), cwd,
+        _cfg(workspace_source="cwd", requested_max_budget_usd=0.30))
+    _await_done(cwd, job_id)
+    payload, found = jobs.result(cwd, job_id)
+    assert found is True
+    assert payload["meta"]["requested_max_budget_usd"] == 0.30
+    # workspace_source=cwd must surface the footgun warning on the rebuilt job meta.
+    assert "workspace_root" in payload["meta"]["workspace_warning"]
+
+
+def test_terminal_nondone_job_surfaces_cost(tmp_path):
+    # A cancelled/timeout job can still have left a cost-bearing envelope. status()
+    # and list_jobs() must surface that spend, matching the result path and the
+    # JobStatus.cost_usd contract ("terminal jobs that spent"), not only done jobs.
+    cwd = str(tmp_path)
+    job_id, _ = jobs.start_job(_emit_cmd(), cwd, _cfg())
+    _await_done(cwd, job_id)
+    # Simulate a cancel that raced in after the envelope landed: the envelope (with
+    # its cost) is on disk, but the record is marked terminal-cancelled.
+    jd = jobs._job_dir(cwd, job_id)
+    meta = jobs._read_meta(jd)
+    meta["terminal_status"] = "cancelled"
+    jobs._write_meta(jd, meta)
+
+    st = jobs.status(cwd, job_id)
+    assert st["status"] == "cancelled"
+    assert st["cost_usd"] == 0.0123
+
+    listing = jobs.list_jobs(cwd)
+    job = next(j for j in listing["jobs"] if j["job_id"] == job_id)
+    assert job["status"] == "cancelled"
+    assert job["cost_usd"] == 0.0123
+
+
 def test_job_running_then_result_says_job_running(tmp_path):
     cwd = str(tmp_path)
     job_id, _ = jobs.start_job(_sleep_cmd(), cwd, _cfg())

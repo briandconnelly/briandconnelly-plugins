@@ -9,7 +9,8 @@ a harness that tails an interactive CLI.
 State lives on disk (keyed by workspace), so status/result/cancel keep working
 across MCP server restarts. There is no daemon: reaping (deadline-kill of
 overrunning jobs, TTL cleanup, count cap) happens lazily on each lifecycle call,
-and ``--max-budget-usd`` still hard-bounds spend even for a job nobody polls.
+and ``--max-budget-usd`` still applies its best-effort spend stop threshold (not a
+hard cap) even for a job nobody polls.
 """
 
 from __future__ import annotations
@@ -27,7 +28,9 @@ from typing import Optional
 from uuid import uuid4
 
 from cc_plugin_codex.normalize import apply_cost_usage, normalize_envelope
-from cc_plugin_codex.schemas import FINGERPRINT, ContextSummary, Meta
+from cc_plugin_codex.schemas import (
+    FINGERPRINT, ContextSummary, Meta, workspace_warning_for,
+)
 
 STATE_ENV = "CC_PLUGIN_CODEX_STATE_DIR"
 TTL_ENV = "CC_PLUGIN_CODEX_JOB_TTL"
@@ -171,6 +174,7 @@ class JobConfig:
     timeout_seconds: int
     workspace_source: Optional[str]
     context_summary: Optional[ContextSummary]
+    requested_max_budget_usd: Optional[float] = None
 
 
 def start_job(cmd: list[str], cwd: str, cfg: JobConfig) -> tuple[str, str]:
@@ -204,6 +208,7 @@ def start_job(cmd: list[str], cwd: str, cfg: JobConfig) -> tuple[str, str]:
             "scope": cfg.scope, "base": cfg.base, "detail": cfg.detail,
             "timeout_seconds": cfg.timeout_seconds,
             "workspace_source": cfg.workspace_source, "cwd": cwd,
+            "requested_max_budget_usd": cfg.requested_max_budget_usd,
         },
         "context_summary": summary,
     }
@@ -303,16 +308,34 @@ def _rmtree(jd: Path) -> None:
 
 def _build_meta(meta: dict, status: str) -> Meta:
     c = meta.get("config", {})
+    cwd = c.get("cwd", "")
+    source = c.get("workspace_source")
     return Meta(
-        cwd=c.get("cwd", ""),
-        workspace_source=c.get("workspace_source"),
+        cwd=cwd,
+        workspace_source=source,
+        workspace_warning=workspace_warning_for(source, cwd),
         config_mode=c.get("config_mode", "inherit"),
         access=c.get("access", "toolless"),
         scope=c.get("scope"), base=c.get("base"),
         timeout_seconds=c.get("timeout_seconds", max_seconds()),
+        requested_max_budget_usd=c.get("requested_max_budget_usd"),
         elapsed_ms=_elapsed_ms(meta),
         job_id=meta.get("job_id"),
     )
+
+
+def _terminal_cost(jd: Path, state: str) -> Optional[float]:
+    """Spend recorded by a terminal job, or None.
+
+    A cancelled/timeout job can still leave a parseable (possibly partial) envelope
+    that recorded cost, so we surface cost for ANY terminal state — matching the
+    result path (_job_error) and the JobStatus.cost_usd contract ('terminal jobs
+    that spent'), not just done."""
+    if state not in _TERMINAL:
+        return None
+    env = _read_envelope(jd) or {}
+    c = env.get("total_cost_usd")
+    return float(c) if isinstance(c, (int, float)) else None
 
 
 def status(cwd: str, job_id: str) -> Optional[dict]:
@@ -323,11 +346,7 @@ def status(cwd: str, job_id: str) -> Optional[dict]:
     if meta is None:
         return None
     state = _status_of(jd, meta)
-    cost = None
-    if state == "done":
-        env = _read_envelope(jd) or {}
-        c = env.get("total_cost_usd")
-        cost = float(c) if isinstance(c, (int, float)) else None
+    cost = _terminal_cost(jd, state)
     detail = None
     if state == "failed":
         detail = _stderr_tail(jd)
@@ -343,6 +362,39 @@ def status(cwd: str, job_id: str) -> Optional[dict]:
         "cost_usd": cost, "detail": detail,
         "fingerprint": FINGERPRINT,
     }
+
+
+def list_jobs(cwd: str) -> dict:
+    """Return a JobListResult dict of the workspace's known jobs, newest first.
+
+    Reaps first (like the other lifecycle calls), so listing can refresh statuses
+    and delete expired records — it is not strictly read-only."""
+    _reap_workspace(cwd)
+    ws = _ws_dir(cwd)
+    summaries = []
+    if ws.is_dir():
+        for jd in ws.iterdir():
+            if not jd.is_dir():
+                continue
+            meta = _read_meta(jd)
+            if meta is None:
+                continue
+            state = _status_of(jd, meta)
+            summaries.append({
+                "_epoch": meta.get("started_epoch", 0.0),
+                "job_id": meta.get("job_id", jd.name),
+                "kind": meta.get("kind", ""),
+                "status": state,
+                "started_at": meta.get("started_at", ""),
+                "elapsed_ms": _elapsed_ms(meta),
+                "result_available": state == "done",
+                "expires_at": _expires_at(meta),
+                "cost_usd": _terminal_cost(jd, state),
+            })
+    summaries.sort(key=lambda s: s["_epoch"], reverse=True)  # newest first
+    for s in summaries:
+        s.pop("_epoch", None)
+    return {"ok": True, "jobs": summaries, "fingerprint": FINGERPRINT}
 
 
 def _stderr_tail(jd: Path, limit: int = 200) -> Optional[str]:

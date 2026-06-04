@@ -14,6 +14,19 @@ def test_working_tree_diff(git_repo):
     assert res.summary.files_changed == 1
     assert res.summary.lines_added >= 1
     assert res.truncated is False
+    assert res.diff_bytes == len(res.text.encode("utf-8"))
+
+
+def test_diff_bytes_reports_full_size_when_truncated(git_repo, monkeypatch):
+    import cc_plugin_codex.context as ctx
+    monkeypatch.setattr(ctx, "MAX_DIFF_BYTES", 10)
+    (git_repo / "big.py").write_text("x = 1\n" * 1000)
+    subprocess.run(["git", "add", "-Nf", "big.py"], cwd=git_repo, check=True)
+    res = gather_context(str(git_repo), scope="working_tree", base="main")
+    assert res.truncated is True
+    # diff_bytes is the true (pre-truncation) size, not the clipped text length.
+    assert res.diff_bytes > 10
+    assert len(res.text.encode("utf-8")) <= 10
 
 
 def test_invalid_scope(git_repo):
