@@ -520,7 +520,7 @@ async def claude_review_changes_async(
     return _result(started.model_dump(mode="json", exclude_none=True))
 
 
-@mcp.tool(annotations=_FREE_READ_ANNOTATIONS, title="Background job status",
+@mcp.tool(annotations=_LOCAL_MUTATION_ANNOTATIONS, title="Background job status",
           output_schema=JOB_STATUS_SCHEMA)
 async def claude_job_status(
     job_id: Annotated[str, Field(description="A job_id from an *_async tool.")],
@@ -546,7 +546,7 @@ async def claude_job_status(
     return _result(data)
 
 
-@mcp.tool(annotations=_FREE_READ_ANNOTATIONS, title="Background job result",
+@mcp.tool(annotations=_LOCAL_MUTATION_ANNOTATIONS, title="Background job result",
           output_schema=RESULT_SCHEMA)
 async def claude_job_result(
     job_id: Annotated[str, Field(description="A job_id from an *_async tool.")],

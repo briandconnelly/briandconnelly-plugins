@@ -382,10 +382,10 @@ async def test_job_tools_declare_state_hints():
     tools = await _tools_by_name()
     assert tools["claude_review_changes_async"].annotations.readOnlyHint is False
     assert tools["claude_review_changes_async"].annotations.idempotentHint is False
-    assert tools["claude_job_status"].annotations.readOnlyHint is True
-    assert tools["claude_job_status"].annotations.idempotentHint is True
-    assert tools["claude_job_result"].annotations.readOnlyHint is True
-    assert tools["claude_job_result"].annotations.idempotentHint is True
+    assert tools["claude_job_status"].annotations.readOnlyHint is False
+    assert tools["claude_job_status"].annotations.idempotentHint is False
+    assert tools["claude_job_result"].annotations.readOnlyHint is False
+    assert tools["claude_job_result"].annotations.idempotentHint is False
     assert tools["claude_job_consume_result"].annotations.readOnlyHint is False
     assert tools["claude_job_consume_result"].annotations.idempotentHint is False
     assert tools["claude_job_cancel"].annotations.readOnlyHint is False
