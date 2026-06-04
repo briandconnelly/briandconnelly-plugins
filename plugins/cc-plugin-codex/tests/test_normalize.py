@@ -34,6 +34,21 @@ def test_extract_json_plain_object():
     assert extract_json('{"verdict": "fail"}') == {"verdict": "fail"}
 
 
+def test_extract_json_ignores_prose_braces_before_object():
+    text = 'Use {placeholder} in prose, then {"verdict": "pass", "summary": "ok"}.'
+    assert extract_json(text) == {"verdict": "pass", "summary": "ok"}
+
+
+def test_extract_json_handles_braces_inside_strings():
+    text = '```json\n{"summary": "literal { brace }", "verdict": "pass"}\n```'
+    assert extract_json(text) == {"summary": "literal { brace }", "verdict": "pass"}
+
+
+def test_extract_json_uses_first_valid_object():
+    text = 'bad {not json} good {"verdict": "concerns"} {"verdict": "pass"}'
+    assert extract_json(text) == {"verdict": "concerns"}
+
+
 def test_extract_json_none_when_absent():
     assert extract_json("no json here") is None
 

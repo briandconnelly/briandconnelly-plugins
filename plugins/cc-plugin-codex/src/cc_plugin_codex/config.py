@@ -10,6 +10,8 @@ EMPTY_MCP = '{"mcpServers":{}}'
 
 MIN_BUDGET_USD, MAX_BUDGET_USD = 0.01, 5.00
 MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS = 10, 600
+DEFAULT_MAX_INPUT_BYTES = 200_000
+DEFAULT_GIT_TIMEOUT_SECONDS = 60
 
 # Reasoning effort levels the `claude` CLI accepts for `--effort`. We default to
 # a high level because the whole value of this server is review depth; lower it
@@ -106,6 +108,15 @@ def clamp_budget(value: float) -> float:
 
 def clamp_timeout(value: int) -> int:
     return max(MIN_TIMEOUT_SECONDS, min(MAX_TIMEOUT_SECONDS, value))
+
+
+def max_input_bytes() -> int:
+    return max(1_000, _env_int("CC_PLUGIN_CODEX_MAX_INPUT_BYTES", DEFAULT_MAX_INPUT_BYTES))
+
+
+def git_timeout_seconds() -> int:
+    return max(1, _env_int("CC_PLUGIN_CODEX_GIT_TIMEOUT_SECONDS",
+                           DEFAULT_GIT_TIMEOUT_SECONDS))
 
 
 def bare_available() -> bool:

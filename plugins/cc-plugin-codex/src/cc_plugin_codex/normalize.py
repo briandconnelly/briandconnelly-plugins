@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, Optional
 
 from cc_plugin_codex.schemas import (
@@ -65,18 +64,37 @@ def build_prompt(tool: str, payload: dict[str, Any], context_text: str) -> str:
 
 
 def extract_json(text: str) -> Optional[dict]:
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    candidate = fenced.group(1) if fenced else None
-    if candidate is None:
-        brace = re.search(r"\{.*\}", text, re.DOTALL)
-        candidate = brace.group(0) if brace else None
-    if candidate is None:
+    decoder = json.JSONDecoder()
+
+    def scan(candidate: str) -> Optional[dict]:
+        for idx, char in enumerate(candidate):
+            if char != "{":
+                continue
+            try:
+                parsed, _ = decoder.raw_decode(candidate[idx:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
         return None
-    try:
-        parsed = json.loads(candidate)
-        return parsed if isinstance(parsed, dict) else None
-    except json.JSONDecodeError:
-        return None
+
+    fence_start = 0
+    while True:
+        start = text.find("```", fence_start)
+        if start < 0:
+            break
+        body_start = text.find("\n", start + 3)
+        if body_start < 0:
+            break
+        end = text.find("```", body_start + 1)
+        if end < 0:
+            break
+        parsed = scan(text[body_start + 1:end])
+        if parsed is not None:
+            return parsed
+        fence_start = end + 3
+
+    return scan(text)
 
 
 def _clamp(value: Any, allowed: set[str], default: str) -> str:

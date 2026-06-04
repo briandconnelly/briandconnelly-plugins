@@ -41,6 +41,8 @@ logged-out CLI before paying for a call that would only then fail auth),
 combined `ready` flag.
 Every paid result also reports `meta.cost_usd` and `meta.usage` (token counts) so an
 agent can track actual spend across calls.
+Diff-bearing paid results report `meta.redacted_paths` when the server withheld or
+masked content before sending it to Claude.
 
 ## Requirements
 
@@ -90,8 +92,9 @@ plugin install) so reviews target your project rather than the plugin checkout.
 ## Safety
 
 - Read-only: Claude is never given write or Bash tools.
-- Secret redaction is filename-based (`.env`, `*.env`, `*.pem`, `*.key`, key files), not
-  content-scanning — it will not catch secrets hardcoded inside ordinary source files.
+- Secret redaction combines filename-based rules (`.env`, `*.env`, `*.pem`, `*.key`,
+  key files) with conservative content scanning for high-confidence token/key patterns
+  in gathered diff lines. Treat it as defense-in-depth, not a guarantee.
 - Diff redaction only applies to the context the server gathers. With `access=readonly`,
   Claude can read any file in the workspace directly (`Read`/`Grep`/`Glob`), so redaction
   does NOT protect against secrets it reads itself — use `access=toolless` (the default)
@@ -102,6 +105,15 @@ plugin install) so reviews target your project rather than the plugin checkout.
   threshold (enforced by the Claude CLI), not a hard cap — reported `meta.cost_usd` can
   exceed it; `meta.requested_max_budget_usd` echoes the value sent. `timeout_seconds`
   bounds wall-clock time per call.
+- Free-form text inputs (`prompt`/`context` for `claude_ask`, `target`/`evidence` for
+  `claude_adversarial_review`) are capped before a paid call by
+  `CC_PLUGIN_CODEX_MAX_INPUT_BYTES` (default 200000 bytes).
+- Git context collection is bounded by `CC_PLUGIN_CODEX_GIT_TIMEOUT_SECONDS` (default
+  60s), so preflight diff work cannot hang indefinitely.
+
+If a requested diff scope has no changes, the review tools return `ok:true` with a
+`pass` verdict and a "No changes in scope" summary without invoking Claude or starting
+a background job.
 
 ## Background reviews
 
@@ -141,7 +153,8 @@ unrecognized `CC_PLUGIN_CODEX_EFFORT` env value instead falls back to the defaul
 
 `CC_PLUGIN_CODEX_CLAUDE_CONFIG`, `CC_PLUGIN_CODEX_ACCESS`, `CC_PLUGIN_CODEX_MODEL`,
 `CC_PLUGIN_CODEX_EFFORT`, `CC_PLUGIN_CODEX_MAX_BUDGET_USD`,
-`CC_PLUGIN_CODEX_TIMEOUT_SECONDS`, `ANTHROPIC_API_KEY`.
+`CC_PLUGIN_CODEX_TIMEOUT_SECONDS`, `CC_PLUGIN_CODEX_MAX_INPUT_BYTES`,
+`CC_PLUGIN_CODEX_GIT_TIMEOUT_SECONDS`, `ANTHROPIC_API_KEY`.
 
 Background jobs add: `CC_PLUGIN_CODEX_STATE_DIR`, `CC_PLUGIN_CODEX_JOB_MAX_SECONDS`,
 `CC_PLUGIN_CODEX_JOB_TTL`, `CC_PLUGIN_CODEX_JOB_MAX_COUNT`.

@@ -112,6 +112,30 @@ def test_classify_budget_from_envelope_subtype():
     assert classify_failure(run).code == "budget_exceeded"
 
 
+def test_classify_auth_from_structured_envelope():
+    import json
+    stdout = json.dumps({"type": "result", "is_error": True,
+                         "subtype": "auth_required", "result": "please login"})
+    run = ClaudeRun(stdout=stdout, stderr="unrelated", exit_code=1,
+                    elapsed_ms=5, timed_out=False)
+    assert classify_failure(run).code == "claude_auth_required"
+
+
+def test_classify_permission_from_structured_envelope():
+    import json
+    stdout = json.dumps({"type": "result", "is_error": True,
+                         "subtype": "permission_denied", "result": "Read denied"})
+    run = ClaudeRun(stdout=stdout, stderr="", exit_code=1, elapsed_ms=5,
+                    timed_out=False)
+    assert classify_failure(run).code == "claude_permission_error"
+
+
+def test_classify_malformed_structured_error_falls_back():
+    run = ClaudeRun(stdout='{"is_error": true,', stderr="something else",
+                    exit_code=2, elapsed_ms=5, timed_out=False)
+    assert classify_failure(run).code == "nonzero_exit"
+
+
 def test_build_command_separates_prompt_with_double_dash():
     cmd = build_command(prompt="--model evil", config_mode="inherit", access="toolless",
                         model=None, max_budget_usd=1.0)

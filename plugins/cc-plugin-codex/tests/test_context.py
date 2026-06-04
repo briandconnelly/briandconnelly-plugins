@@ -41,6 +41,73 @@ def test_secret_files_redacted(git_repo):
     res = gather_context(str(git_repo), scope="working_tree", base="main")
     assert "supersecret" not in res.text
     assert ".env" in res.text  # path noted as redacted
+    assert ".env" in res.redacted_paths
+
+
+def test_secret_values_in_source_are_redacted(git_repo):
+    (git_repo / "app.py").write_text(
+        "def add(a, b):\n"
+        "    token = 'ghp_1234567890abcdefghijklmnopqrstu'\n"
+        "    return a - b\n"
+    )
+    res = gather_context(str(git_repo), scope="working_tree", base="main")
+    assert "ghp_1234567890abcdefghijklmnopqrstu" not in res.text
+    assert "[redacted: secret value]" in res.text
+    assert "app.py" in res.redacted_paths
+
+
+def test_secret_values_in_removed_lines_are_redacted(git_repo):
+    subprocess.run(["git", "checkout", "--", "app.py"], cwd=git_repo, check=True)
+    (git_repo / "app.py").write_text(
+        "def add(a, b):\n"
+        "    token = 'ghp_1234567890abcdefghijklmnopqrstu'\n"
+        "    return a + b\n"
+    )
+    subprocess.run(["git", "add", "app.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add token"], cwd=git_repo, check=True)
+    (git_repo / "app.py").write_text("def add(a, b):\n    return a + b\n")
+    res = gather_context(str(git_repo), scope="working_tree", base="main")
+    assert "ghp_1234567890abcdefghijklmnopqrstu" not in res.text
+    assert "[redacted: secret value]" in res.text
+
+
+def test_secret_values_in_context_lines_are_redacted(git_repo):
+    subprocess.run(["git", "checkout", "--", "app.py"], cwd=git_repo, check=True)
+    (git_repo / "app.py").write_text(
+        "def add(a, b):\n"
+        "    token = 'ghp_1234567890abcdefghijklmnopqrstu'\n"
+        "    return a + b\n"
+    )
+    subprocess.run(["git", "add", "app.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add token"], cwd=git_repo, check=True)
+    (git_repo / "app.py").write_text(
+        "def add(a, b):\n"
+        "    token = 'ghp_1234567890abcdefghijklmnopqrstu'\n"
+        "    return a - b\n"
+    )
+    res = gather_context(str(git_repo), scope="working_tree", base="main")
+    assert "ghp_1234567890abcdefghijklmnopqrstu" not in res.text
+    assert "[redacted: secret value]" in res.text
+
+
+def test_redacted_paths_are_normalized(git_repo):
+    (git_repo / ".env").write_text("API_KEY=supersecret\n")
+    subprocess.run(["git", "add", "-Nf", ".env"], cwd=git_repo, check=True)
+    res = gather_context(str(git_repo), scope="working_tree", base="main")
+    assert ".env" in res.redacted_paths
+    assert all(" b/" not in path for path in res.redacted_paths)
+
+
+def test_git_timeout_is_bounded(monkeypatch, git_repo):
+    import cc_plugin_codex.context as ctx
+
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setenv("CC_PLUGIN_CODEX_GIT_TIMEOUT_SECONDS", "2")
+    monkeypatch.setattr(ctx.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="timed out after 2s"):
+        gather_context(str(git_repo), scope="working_tree", base="main")
 
 
 def test_size_cap_truncates(git_repo, monkeypatch):

@@ -199,7 +199,45 @@ async def test_claude_ask_returns_normalized(fake_claude):
     data = structured(result)
     assert data["ok"] is True
     assert data["verdict"] == "concerns"
-    assert data["meta"]["fingerprint"] == "cc-plugin-codex/0.1/schema-9"
+    assert data["meta"]["fingerprint"] == "cc-plugin-codex/0.1/schema-10"
+
+
+async def test_claude_ask_rejects_oversized_prompt_before_paid_call(monkeypatch, tmp_path):
+    import cc_plugin_codex.server as srv
+
+    async def fail_run(*args, **kwargs):
+        raise AssertionError("paid call should not run")
+
+    monkeypatch.setenv("CC_PLUGIN_CODEX_MAX_INPUT_BYTES", "1000")
+    monkeypatch.setattr(srv, "run_claude_async", fail_run)
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "claude_ask",
+            {"prompt": "x" * 1500, "workspace_root": str(tmp_path)},
+            raise_on_error=False)
+    data = structured(result)
+    assert data["ok"] is False
+    assert data["error"]["code"] == "context_too_large"
+    assert data["error"]["offending_param"] == "prompt"
+
+
+async def test_adversarial_rejects_oversized_evidence_before_paid_call(monkeypatch, tmp_path):
+    import cc_plugin_codex.server as srv
+
+    async def fail_run(*args, **kwargs):
+        raise AssertionError("paid call should not run")
+
+    monkeypatch.setenv("CC_PLUGIN_CODEX_MAX_INPUT_BYTES", "1000")
+    monkeypatch.setattr(srv, "run_claude_async", fail_run)
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "claude_adversarial_review",
+            {"target": "x", "evidence": "y" * 1500, "workspace_root": str(tmp_path)},
+            raise_on_error=False)
+    data = structured(result)
+    assert data["ok"] is False
+    assert data["error"]["code"] == "context_too_large"
+    assert data["error"]["offending_param"] == "evidence"
 
 
 async def test_invalid_enum_param_rejected_by_schema(fake_claude):
@@ -332,6 +370,56 @@ async def test_review_changes_runs_in_git_repo(fake_claude, monkeypatch, git_rep
     data = structured(result)
     assert data["ok"] is True
     assert data["verdict"] == "concerns"
+
+
+async def test_review_changes_empty_diff_skips_paid_call(monkeypatch, git_repo):
+    import subprocess as _sp
+    import cc_plugin_codex.server as srv
+
+    _sp.run(["git", "checkout", "--", "app.py"], cwd=git_repo, check=True)
+
+    async def fail_run(*args, **kwargs):
+        raise AssertionError("paid call should not run")
+
+    monkeypatch.setattr(srv, "run_claude_async", fail_run)
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "claude_review_changes",
+            {"scope": "working_tree", "workspace_root": str(git_repo)})
+    data = structured(result)
+    assert data["ok"] is True
+    assert data["verdict"] == "pass"
+    assert "No changes" in data["summary"]
+    assert data["context_summary"]["files_changed"] == 0
+
+
+async def test_adversarial_empty_attached_diff_skips_paid_call(monkeypatch, git_repo):
+    import subprocess as _sp
+    import cc_plugin_codex.server as srv
+
+    _sp.run(["git", "checkout", "--", "app.py"], cwd=git_repo, check=True)
+
+    async def fail_run(*args, **kwargs):
+        raise AssertionError("paid call should not run")
+
+    monkeypatch.setattr(srv, "run_claude_async", fail_run)
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "claude_adversarial_review",
+            {"target": "review plan", "scope": "working_tree",
+             "workspace_root": str(git_repo)})
+    data = structured(result)
+    assert data["ok"] is True
+    assert data["verdict"] == "unknown"
+    assert data["context_summary"]["files_changed"] == 0
+
+
+async def test_adversarial_without_scope_still_calls_claude(fake_claude, tmp_path):
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "claude_adversarial_review",
+            {"target": "review plan", "workspace_root": str(tmp_path)})
+    assert structured(result)["ok"] is True
 
 
 async def test_adversarial_invalid_scope_param_rejected_by_schema(fake_claude, monkeypatch, git_repo):
@@ -554,7 +642,7 @@ async def test_capabilities_tool_returns_structured_contract():
     async with Client(mcp) as client:
         result = await client.call_tool("cc_codex_capabilities", {})
     data = structured(result)
-    assert data["fingerprint"] == "cc-plugin-codex/0.1/schema-9"
+    assert data["fingerprint"] == "cc-plugin-codex/0.1/schema-10"
     assert data["transport"] == "stdio"
     assert set(data["paid_tools"]) == {
         "claude_ask", "claude_review_changes", "claude_adversarial_review",
@@ -613,6 +701,73 @@ async def test_dry_run_reports_redaction_count(monkeypatch, git_repo):
             {"scope": "working_tree", "workspace_root": str(git_repo)}))
     assert data["redacted_paths_count"] >= 1
     assert any(".env" in p for p in data["redacted_paths"])
+
+
+async def test_review_result_reports_redacted_paths(fake_claude, git_repo):
+    import subprocess as _sp
+
+    (git_repo / ".env").write_text("API_KEY=supersecret\n")
+    _sp.run(["git", "add", "-Nf", ".env"], cwd=git_repo, check=True)
+    async with Client(mcp) as client:
+        data = structured(await client.call_tool(
+            "claude_review_changes",
+            {"scope": "working_tree", "workspace_root": str(git_repo)}))
+    assert data["ok"] is True
+    assert any(".env" in p for p in data["meta"]["redacted_paths"])
+
+
+async def test_async_empty_diff_skips_job_start(monkeypatch, git_repo, tmp_path):
+    import subprocess as _sp
+    import cc_plugin_codex.server as srv
+
+    _sp.run(["git", "checkout", "--", "app.py"], cwd=git_repo, check=True)
+    monkeypatch.setenv("CC_PLUGIN_CODEX_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(srv, "build_command",
+                        lambda *args, **kwargs: (_ for _ in ()).throw(
+                            AssertionError("job should not start")))
+    async with Client(mcp) as client:
+        data = structured(await client.call_tool(
+            "claude_review_changes_async",
+            {"scope": "working_tree", "workspace_root": str(git_repo)}))
+    assert data["ok"] is True
+    assert data["tool"] == "claude_review_changes"
+    assert data["verdict"] == "pass"
+
+
+async def test_async_result_reports_redacted_paths(monkeypatch, git_repo, tmp_path):
+    import json as _json
+    import subprocess as _sp
+    import time as _time
+
+    import cc_plugin_codex.server as srv
+
+    (git_repo / ".env").write_text("API_KEY=supersecret\n")
+    _sp.run(["git", "add", "-Nf", ".env"], cwd=git_repo, check=True)
+    monkeypatch.setenv("CC_PLUGIN_CODEX_STATE_DIR", str(tmp_path / "state"))
+    inner = {"summary": "ok", "verdict": "pass", "confidence": "high",
+             "findings": [], "questions": [], "assumptions": []}
+    envelope = _json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                            "result": _json.dumps(inner)})
+    monkeypatch.setattr(srv, "build_command",
+                        lambda *a, **k: ["sh", "-c", "printf '%s' \"$0\"", envelope])
+
+    async with Client(mcp) as client:
+        started = structured(await client.call_tool(
+            "claude_review_changes_async",
+            {"scope": "working_tree", "workspace_root": str(git_repo)}))
+        job_id = started["job_id"]
+        deadline = _time.time() + 5
+        while _time.time() < deadline:
+            st = structured(await client.call_tool(
+                "claude_job_status",
+                {"job_id": job_id, "workspace_root": str(git_repo)}))
+            if st["status"] == "done":
+                break
+            await anyio.sleep(0.05)
+        result = structured(await client.call_tool(
+            "claude_job_result",
+            {"job_id": job_id, "workspace_root": str(git_repo)}))
+    assert ".env" in result["meta"]["redacted_paths"]
 
 
 async def test_dry_run_bad_base_is_structured_error(git_repo):

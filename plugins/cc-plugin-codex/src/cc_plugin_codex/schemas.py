@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 # Bump this whenever the agent-visible surface changes: tool names, input or
 # output schemas, the ErrorCode set, the config_mode/access/scope/detail value
 # sets, or the capability guarantees in CAPABILITY_SUMMARY. Clients cache by it.
-FINGERPRINT = "cc-plugin-codex/0.1/schema-9"
+FINGERPRINT = "cc-plugin-codex/0.1/schema-10"
 
 Severity = Literal["critical", "high", "medium", "low", "nit"]
 Verdict = Literal["pass", "concerns", "fail", "unknown"]
@@ -103,6 +103,7 @@ class Meta(BaseModel):
     truncation_hint: Optional[str] = None
     command_exit_code: Optional[int] = None
     permission_denials: Optional[list] = None
+    redacted_paths: list[str] = Field(default_factory=list)
     cost_usd: Optional[float] = None
     usage: Optional[Usage] = None
     job_id: Optional[str] = None   # set on background-job results; None for sync calls
@@ -287,9 +288,9 @@ def _object_union_schema(adapter: TypeAdapter) -> dict:
 RESULT_SCHEMA = _object_union_schema(TypeAdapter(SuccessResult | ErrorResult))
 STATUS_SCHEMA = StatusResult.model_json_schema()
 CAPABILITIES_SCHEMA = CapabilitiesResult.model_json_schema()
-# A failed *_async launch (e.g. context_too_large) returns the error envelope, so
-# the start tools advertise the JobStarted|ErrorResult union.
-JOB_STARTED_SCHEMA = _object_union_schema(TypeAdapter(JobStarted | ErrorResult))
+# A failed *_async launch returns the error envelope; an empty diff returns a
+# SuccessResult without starting a job.
+JOB_STARTED_SCHEMA = _object_union_schema(TypeAdapter(JobStarted | SuccessResult | ErrorResult))
 JOB_STATUS_SCHEMA = _object_union_schema(TypeAdapter(JobStatus | ErrorResult))
 # Dry-run and job-list can fail (bad scope/base/workspace), so advertise the union.
 DRY_RUN_SCHEMA = _object_union_schema(TypeAdapter(DryRunResult | ErrorResult))
