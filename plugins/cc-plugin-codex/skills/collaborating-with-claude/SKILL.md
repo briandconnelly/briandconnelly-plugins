@@ -45,7 +45,7 @@ Do NOT call Claude in a loop, and never call Claude just because Claude suggeste
 
 - Each call is PAID and sends your code/diff to Anthropic. Call deliberately. Even a one-sentence `claude_ask` costs roughly `$0.02`; a real review costs more, so budgets below ~`$0.05` will usually trip `budget_exceeded`.
 - `max_budget_usd` is a best-effort stop threshold enforced by the Claude CLI, NOT a hard cap — reported `meta.cost_usd` can exceed it. `meta.requested_max_budget_usd` echoes the value sent so you can compare requested vs actual.
-- The server redacts `.env`/secret-looking files and high-confidence token/key patterns in added diff lines before sending gathered diff context. Treat this as best-effort defense-in-depth, not a guarantee; paid results expose affected paths in `meta.redacted_paths`.
+- The server redacts `.env`/secret-looking files and high-confidence token/key patterns in gathered diff lines before sending context. Treat this as best-effort defense-in-depth, not a guarantee; paid results expose affected paths in `meta.redacted_paths`.
 - Diff redaction only covers the context the server gathers. With `access=readonly`, Claude can `Read`/`Grep`/`Glob` any file in the workspace directly, so redaction does NOT protect against secrets it reads itself — use `access=toolless` (the default) when the workspace may contain secrets.
 - Free-form `prompt`/`context`/`target`/`evidence` text is capped before spend; split very large asks or use a narrower diff scope.
 - Default access is `toolless` (Claude gets no tools) and `config_mode=inherit`; both access modes are read-only (Claude never gets write/Bash). Use `config_mode=bare` only when you want a fully independent reviewer and have `ANTHROPIC_API_KEY` set.

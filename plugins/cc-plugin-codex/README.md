@@ -92,9 +92,9 @@ plugin install) so reviews target your project rather than the plugin checkout.
 ## Safety
 
 - Read-only: Claude is never given write or Bash tools.
-- Secret redaction is filename-based (`.env`, `*.env`, `*.pem`, `*.key`, key files), not
-  plus conservative content scanning for high-confidence token/key patterns in added
-  diff lines. Treat it as defense-in-depth, not a guarantee.
+- Secret redaction combines filename-based rules (`.env`, `*.env`, `*.pem`, `*.key`,
+  key files) with conservative content scanning for high-confidence token/key patterns
+  in gathered diff lines. Treat it as defense-in-depth, not a guarantee.
 - Diff redaction only applies to the context the server gathers. With `access=readonly`,
   Claude can read any file in the workspace directly (`Read`/`Grep`/`Glob`), so redaction
   does NOT protect against secrets it reads itself — use `access=toolless` (the default)

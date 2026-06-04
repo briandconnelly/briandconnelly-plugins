@@ -471,7 +471,7 @@ async def claude_adversarial_review(
     redacted_paths: list[str] = []
     if scope:
         meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
-                     workspace_source=ws_source)
+                     workspace_source=ws_source, requested_budget=r.budget)
         try:
             ctx_data = await anyio.to_thread.run_sync(
                 lambda: gather_context(cwd, scope=scope, base=base))
