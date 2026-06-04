@@ -69,3 +69,27 @@ def test_readonly_allowlist_has_no_write_tools():
     assert ro[1] == "Read,Grep,Glob"  # allowlist contains only read tools
     for bad in ("Edit", "Write", "NotebookEdit", "Bash"):
         assert bad not in ro[1]
+
+
+def test_default_effort(monkeypatch):
+    monkeypatch.delenv("CC_PLUGIN_CODEX_EFFORT", raising=False)
+    assert cfg.defaults().effort == cfg.DEFAULT_EFFORT
+
+
+def test_effort_from_env(monkeypatch):
+    monkeypatch.setenv("CC_PLUGIN_CODEX_EFFORT", "xhigh")
+    assert cfg.defaults().effort == "xhigh"
+
+
+def test_sanitize_effort_falls_back_on_invalid():
+    assert cfg.sanitize_effort("bogus") == cfg.DEFAULT_EFFORT
+    assert cfg.sanitize_effort(None) == cfg.DEFAULT_EFFORT
+    for level in cfg.VALID_EFFORTS:
+        assert cfg.sanitize_effort(level) == level
+
+
+def test_version_supported():
+    assert cfg.version_supported("2.1.162 (Claude Code)") is True
+    assert cfg.version_supported("3.0.0") is False
+    assert cfg.version_supported("garbage") is None
+    assert cfg.version_supported(None) is None

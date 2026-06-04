@@ -40,11 +40,25 @@ def test_build_command_toolless_inherit():
                         model=None, max_budget_usd=1.0)
     assert cmd[0] == "claude"
     assert "-p" in cmd and "--output-format" in cmd and "json" in cmd
+    assert "--no-chrome" in cmd  # avoid an interactive Chrome picker hanging the call
     assert "--no-session-persistence" in cmd
     assert "--tools" in cmd
     assert "--append-system-prompt" in cmd
     assert cmd[-2] == "--"
     assert cmd[-1] == "hi"  # prompt is the final positional arg
+
+
+def test_build_command_effort_flag():
+    cmd = build_command(prompt="hi", config_mode="inherit", access="toolless",
+                        model=None, max_budget_usd=1.0, effort="xhigh")
+    assert "--effort" in cmd
+    assert cmd[cmd.index("--effort") + 1] == "xhigh"
+
+
+def test_build_command_omits_effort_when_none():
+    cmd = build_command(prompt="hi", config_mode="inherit", access="toolless",
+                        model=None, max_budget_usd=1.0)
+    assert "--effort" not in cmd
 
 
 def test_build_command_model():

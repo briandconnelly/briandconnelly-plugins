@@ -15,19 +15,25 @@ from fastmcp import Context, FastMCP
 from fastmcp.tools.tool import ToolResult
 from pydantic import Field
 
-from cc_plugin_codex.claude import build_command, classify_failure, run_claude_async
+from cc_plugin_codex.claude import (
+    auth_status, build_command, classify_failure, run_claude_async,
+)
 from cc_plugin_codex.config import (
     MAX_BUDGET_USD, MAX_TIMEOUT_SECONDS, MIN_BUDGET_USD, MIN_TIMEOUT_SECONDS,
-    bare_available, clamp_budget, clamp_timeout, defaults,
+    VALID_EFFORTS, bare_available, clamp_budget, clamp_timeout, defaults,
+    sanitize_effort, version_supported,
 )
 from cc_plugin_codex.context import (
     InvalidBaseError, InvalidScopeError, gather_context,
 )
+from cc_plugin_codex import jobs
+from cc_plugin_codex.jobs import JobConfig
 from cc_plugin_codex.normalize import apply_cost_usage, build_prompt, normalize_envelope
 from cc_plugin_codex.schemas import (
-    CAPABILITIES_SCHEMA, FINGERPRINT, RESULT_SCHEMA, STATUS_SCHEMA,
-    Access, CapabilitiesResult, ConfigMode, Detail,
-    ErrorInfo, ErrorResult, Meta, ResolvedDefaults, Scope, StatusResult,
+    CAPABILITIES_SCHEMA, FINGERPRINT, JOB_STARTED_SCHEMA, JOB_STATUS_SCHEMA,
+    RESULT_SCHEMA, STATUS_SCHEMA,
+    Access, CapabilitiesResult, ConfigMode, Detail, Effort,
+    ErrorInfo, ErrorResult, JobStarted, Meta, ResolvedDefaults, Scope, StatusResult,
 )
 
 CAPABILITY_SUMMARY = (
@@ -51,7 +57,7 @@ CAPABILITY_SUMMARY = (
     "cannot be resumed; narrow the scope or lower timeout_seconds to bound a call. "
     "Prerequisite: the `claude` CLI installed and authenticated; config_mode=bare "
     "additionally requires ANTHROPIC_API_KEY. "
-    "Note: in claude 2.1.161 there is no OAuth-preserving way to fully strip "
+    "Note: in claude 2.1.x there is no OAuth-preserving way to fully strip "
     "CLAUDE.md/memory — full config independence (config_mode=bare) requires an API key. "
     "Invalid enum-typed arguments are rejected as schema validation errors before "
     "a tool runs (not via the ok:false envelope). "
@@ -150,10 +156,11 @@ class Resolved:
     budget: float
     timeout: int
     detail: str
+    effort: str
 
 
 def _resolve(config_mode, access, model, max_budget_usd, timeout_seconds, detail,
-             cwd, scope=None, base=None, workspace_source=None):
+             cwd, scope=None, base=None, workspace_source=None, effort=None):
     """Resolve env defaults + clamps and validate. Returns (Resolved, None) or (None, error_dict)."""
     d = defaults()
     cm = config_mode or d.config_mode
@@ -162,6 +169,7 @@ def _resolve(config_mode, access, model, max_budget_usd, timeout_seconds, detail
     budget = clamp_budget(max_budget_usd if max_budget_usd is not None else d.max_budget_usd)
     timeout = clamp_timeout(timeout_seconds if timeout_seconds is not None else d.timeout_seconds)
     det = detail if detail in ("summary", "full") else "summary"
+    eff = effort if effort in VALID_EFFORTS else d.effort
 
     # Validate before building Meta (Meta uses Literal types — invalid values
     # would raise Pydantic errors before we can return a structured response).
@@ -184,14 +192,14 @@ def _resolve(config_mode, access, model, max_budget_usd, timeout_seconds, detail
                           "config_mode=bare requires ANTHROPIC_API_KEY, which is unset.",
                           "Set ANTHROPIC_API_KEY, or use config_mode inherit/scoped.",
                           meta, offending="config_mode")
-    return Resolved(cm, ac, mdl, budget, timeout, det), None
+    return Resolved(cm, ac, mdl, budget, timeout, det, eff), None
 
 
 async def _execute(tool, payload, r: Resolved, cwd,
                    scope=None, base=None, context_text="", context_summary=None,
                    workspace_source=None) -> dict:
     prompt = build_prompt(tool, payload, context_text)
-    cmd = build_command(prompt, r.config_mode, r.access, r.model, r.budget)
+    cmd = build_command(prompt, r.config_mode, r.access, r.model, r.budget, r.effort)
     run = await run_claude_async(cmd, cwd=cwd, timeout_seconds=r.timeout)
     meta = _meta(cwd, r.config_mode, r.access, r.timeout, run.elapsed_ms, run.exit_code,
                  scope, base, workspace_source=workspace_source)
@@ -221,6 +229,9 @@ async def claude_ask(
     config_mode: Annotated[Optional[ConfigMode], Field(description="inherit|scoped|bare")] = None,
     access: Annotated[Optional[Access], Field(description="toolless|readonly")] = None,
     model: Optional[str] = None,
+    effort: Annotated[Optional[Effort], Field(
+        description="Reasoning effort: low|medium|high|xhigh|max. "
+        "Raise for high-stakes reviews; omit to use the server default.")] = None,
     max_budget_usd: Optional[float] = None,
     timeout_seconds: Optional[int] = None,
     detail: Annotated[Detail, Field(description="summary|full")] = "summary",
@@ -254,7 +265,7 @@ async def claude_ask(
                        "Pass workspace_root as an absolute path to an existing directory, or "
                        "configure an MCP root.", meta, offending="workspace_root"))
     r, err = _resolve(config_mode, access, model, max_budget_usd, timeout_seconds,
-                      detail, cwd, workspace_source=ws_source)
+                      detail, cwd, workspace_source=ws_source, effort=effort)
     if err:
         return _result(err)
     payload = {"prompt": prompt, "context": context}
@@ -274,6 +285,9 @@ async def claude_review_changes(
     config_mode: Annotated[Optional[ConfigMode], Field(description="inherit|scoped|bare")] = None,
     access: Annotated[Optional[Access], Field(description="toolless|readonly")] = None,
     model: Optional[str] = None,
+    effort: Annotated[Optional[Effort], Field(
+        description="Reasoning effort: low|medium|high|xhigh|max. "
+        "Raise for high-stakes reviews; omit to use the server default.")] = None,
     max_budget_usd: Optional[float] = None,
     timeout_seconds: Optional[int] = None,
     detail: Annotated[Detail, Field(description="summary|full")] = "summary",
@@ -308,7 +322,8 @@ async def claude_review_changes(
                        "configure an MCP root.", meta, offending="workspace_root"))
     # Validate options BEFORE touching git, so bad config isn't masked by git errors.
     r, err = _resolve(config_mode, access, model, max_budget_usd, timeout_seconds,
-                      detail, cwd, scope=scope, base=base, workspace_source=ws_source)
+                      detail, cwd, scope=scope, base=base, workspace_source=ws_source,
+                      effort=effort)
     if err:
         return _result(err)
     meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
@@ -351,6 +366,9 @@ async def claude_adversarial_review(
     config_mode: Annotated[Optional[ConfigMode], Field(description="inherit|scoped|bare")] = None,
     access: Annotated[Optional[Access], Field(description="toolless|readonly")] = None,
     model: Optional[str] = None,
+    effort: Annotated[Optional[Effort], Field(
+        description="Reasoning effort: low|medium|high|xhigh|max. "
+        "Raise for high-stakes reviews; omit to use the server default.")] = None,
     max_budget_usd: Optional[float] = None,
     timeout_seconds: Optional[int] = None,
     detail: Annotated[Detail, Field(description="summary|full")] = "summary",
@@ -380,7 +398,8 @@ async def claude_adversarial_review(
                        "Pass workspace_root as an absolute path to an existing directory, or "
                        "configure an MCP root.", meta, offending="workspace_root"))
     r, err = _resolve(config_mode, access, model, max_budget_usd, timeout_seconds,
-                      detail, cwd, scope=scope, base=base, workspace_source=ws_source)
+                      detail, cwd, scope=scope, base=base, workspace_source=ws_source,
+                      effort=effort)
     if err:
         return _result(err)
     context_text = ""
@@ -417,6 +436,195 @@ async def claude_adversarial_review(
     return _result(out)
 
 
+# Starting a background job commits to spend (the job runs to completion or its
+# budget cap even if never polled), but returns immediately without blocking.
+_ASYNC_START_ANNOTATIONS = {
+    "readOnlyHint": True, "openWorldHint": True,
+    "destructiveHint": False, "idempotentHint": False,
+}
+
+
+@mcp.tool(annotations=_ASYNC_START_ANNOTATIONS, title="Review changes with Claude (background)",
+          output_schema=JOB_STARTED_SCHEMA)
+async def claude_review_changes_async(
+    scope: Annotated[Scope, Field(description="working_tree|staged|branch")],
+    base: Annotated[str, Field(description="Base ref for scope=branch.")] = "main",
+    focus: Annotated[Optional[str], Field(description="e.g. 'security', 'tests'.")] = None,
+    workspace_root: Annotated[Optional[str], Field(
+        description="Absolute path to the repo/workspace to operate in. If omitted, "
+        "the server uses the client's first MCP root, else its own cwd.")] = None,
+    config_mode: Annotated[Optional[ConfigMode], Field(description="inherit|scoped|bare")] = None,
+    access: Annotated[Optional[Access], Field(description="toolless|readonly")] = None,
+    model: Optional[str] = None,
+    effort: Annotated[Optional[Effort], Field(
+        description="Reasoning effort: low|medium|high|xhigh|max.")] = None,
+    max_budget_usd: Optional[float] = None,
+    detail: Annotated[Detail, Field(description="summary|full")] = "summary",
+    ctx: Context = None,
+) -> ToolResult:
+    """Launch a Claude diff review as a BACKGROUND job and return immediately.
+
+    Unlike claude_review_changes (which blocks), this returns a job handle
+    {ok, job_id, status:"running", ...} right away; the review keeps running
+    detached. Poll claude_job_status(job_id), then claude_job_result(job_id) once
+    status=done. Use this for large diffs or when you want to keep working while
+    Claude reviews. Paid (commits to spend) + read-only. The diff is gathered now,
+    with the same secret redaction and budget cap as the synchronous tool.
+
+    The job is bounded by max_budget_usd and a wall-clock deadline
+    (CC_PLUGIN_CODEX_JOB_MAX_SECONDS, default 1800s) enforced on the next status
+    poll. timeout_seconds does not apply (there is no blocking call to time out).
+    Error codes mirror claude_review_changes for the launch phase (e.g.
+    invalid_scope, invalid_base, context_too_large, unsupported_config_mode).
+    """
+    cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
+    if ws_err:
+        meta = _meta("", "inherit", "toolless", 0, 0, None)
+        return _result(_err(ws_err,
+                       f"workspace_root '{workspace_root}' is not an existing absolute directory.",
+                       "Pass workspace_root as an absolute path to an existing directory, or "
+                       "configure an MCP root.", meta, offending="workspace_root"))
+    r, err = _resolve(config_mode, access, model, max_budget_usd, None,
+                      detail, cwd, scope=scope, base=base, workspace_source=ws_source,
+                      effort=effort)
+    if err:
+        return _result(err)
+    # A background job is bounded by its wall-clock deadline, not the synchronous
+    # timeout_seconds; report that everywhere so meta stays consistent with the job.
+    job_timeout = jobs.max_seconds()
+    meta = _meta(cwd, r.config_mode, r.access, job_timeout, 0, None, scope, base,
+                 workspace_source=ws_source)
+    try:
+        ctx_data = await anyio.to_thread.run_sync(
+            lambda: gather_context(cwd, scope=scope, base=base))
+    except InvalidBaseError:
+        return _result(_err("invalid_base", f"Invalid base ref '{base}'.",
+                       "Use an existing git ref matching [A-Za-z0-9._/-]+ that does "
+                       "not start with '-'.", meta, offending="base"))
+    except InvalidScopeError:
+        return _result(_err("invalid_scope", f"Invalid scope '{scope}'.",
+                       "Use working_tree, staged, or branch.", meta, offending="scope"))
+    except RuntimeError as e:
+        return _result(_err("internal_error", f"git failed: {e}",
+                       "Ensure cwd is a git repo and base ref exists.", meta))
+    if ctx_data.truncated:
+        meta = _meta(cwd, r.config_mode, r.access, job_timeout, 0, None, scope, base,
+                     truncated=True, hint=ctx_data.truncation_hint, workspace_source=ws_source)
+        return _result(_err("context_too_large", "The diff is too large to review safely.",
+                       ctx_data.truncation_hint or "Narrow the scope.", meta))
+    prompt = build_prompt("claude_review_changes",
+                          {"scope": scope, "base": base, "focus": focus}, ctx_data.text)
+    cmd = build_command(prompt, r.config_mode, r.access, r.model, r.budget, r.effort)
+    cfg = JobConfig(kind="claude_review_changes", config_mode=r.config_mode,
+                    access=r.access, scope=scope, base=base, detail=r.detail,
+                    timeout_seconds=jobs.max_seconds(), workspace_source=ws_source,
+                    context_summary=ctx_data.summary)
+    job_id, started_at = await anyio.to_thread.run_sync(
+        lambda: jobs.start_job(cmd, cwd, cfg))
+    started = JobStarted(
+        job_id=job_id, kind="claude_review_changes", started_at=started_at,
+        deadline_seconds=job_timeout,
+        meta=_meta(cwd, r.config_mode, r.access, job_timeout, 0, None, scope, base,
+                   workspace_source=ws_source),
+    )
+    return _result(started.model_dump(mode="json", exclude_none=True))
+
+
+@mcp.tool(annotations=_STATUS_ANNOTATIONS, title="Background job status",
+          output_schema=JOB_STATUS_SCHEMA)
+async def claude_job_status(
+    job_id: Annotated[str, Field(description="A job_id from an *_async tool.")],
+    workspace_root: Annotated[Optional[str], Field(
+        description="Workspace the job belongs to (defaults like the async tools).")] = None,
+    ctx: Context = None,
+) -> ToolResult:
+    """Report a background job's lifecycle state (free; no Claude call).
+
+    Returns {ok, job_id, status, elapsed_ms, result_available, cost_usd?} where
+    status is running|done|failed|cancelled|timeout. Call claude_job_result once
+    result_available is true. A running job past its deadline is stopped and
+    reported as timeout here. Returns job_not_found if the id is unknown (or its
+    record was cleaned up after the TTL).
+    """
+    cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
+    if ws_err:
+        meta = _meta("", "inherit", "toolless", 0, 0, None)
+        return _result(_err(ws_err, "workspace_root is not an existing absolute directory.",
+                       "Pass an absolute path or configure an MCP root.", meta,
+                       offending="workspace_root"))
+    data = await anyio.to_thread.run_sync(lambda: jobs.status(cwd, job_id))
+    if data is None:
+        meta = _meta(cwd, "inherit", "toolless", 0, 0, None, workspace_source=ws_source)
+        return _result(_err("job_not_found", f"No job '{job_id}' in this workspace.",
+                       "Check the job_id, or start a new job; records expire after the TTL.",
+                       meta, offending="job_id"))
+    return _result(data)
+
+
+@mcp.tool(annotations=_STATUS_ANNOTATIONS, title="Background job result",
+          output_schema=RESULT_SCHEMA)
+async def claude_job_result(
+    job_id: Annotated[str, Field(description="A job_id from an *_async tool.")],
+    consume: Annotated[bool, Field(
+        description="Delete the job record after returning the result.")] = False,
+    workspace_root: Annotated[Optional[str], Field(
+        description="Workspace the job belongs to (defaults like the async tools).")] = None,
+    ctx: Context = None,
+) -> ToolResult:
+    """Fetch a finished background job's review (free; no new Claude call).
+
+    On success returns the SAME envelope as the synchronous tools (ok, verdict,
+    confidence, findings, meta.cost_usd, ...), with meta.job_id set — reuse your
+    existing result parser. If the job is not yet done it returns an ok:false
+    error: job_running (poll and retry), job_cancelled, job_timeout, or job_failed;
+    job_not_found if the id is unknown. Pass consume=true to delete the record once
+    you have the result.
+    """
+    cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
+    if ws_err:
+        meta = _meta("", "inherit", "toolless", 0, 0, None)
+        return _result(_err(ws_err, "workspace_root is not an existing absolute directory.",
+                       "Pass an absolute path or configure an MCP root.", meta,
+                       offending="workspace_root"))
+    payload, found = await anyio.to_thread.run_sync(
+        lambda: jobs.result(cwd, job_id, consume))
+    if not found:
+        meta = _meta(cwd, "inherit", "toolless", 0, 0, None, workspace_source=ws_source)
+        return _result(_err("job_not_found", f"No job '{job_id}' in this workspace.",
+                       "Check the job_id, or start a new job; records expire after the TTL.",
+                       meta, offending="job_id"))
+    return _result(payload)
+
+
+@mcp.tool(annotations=_STATUS_ANNOTATIONS, title="Cancel background job",
+          output_schema=JOB_STATUS_SCHEMA)
+async def claude_job_cancel(
+    job_id: Annotated[str, Field(description="A job_id from an *_async tool.")],
+    workspace_root: Annotated[Optional[str], Field(
+        description="Workspace the job belongs to (defaults like the async tools).")] = None,
+    ctx: Context = None,
+) -> ToolResult:
+    """Stop a running background job (free; terminates the Claude process).
+
+    Kills the detached Claude process and marks the job cancelled; a cancelled job
+    cannot be resumed. Returns the resulting JobStatus, or job_not_found. Already
+    terminal jobs are returned unchanged.
+    """
+    cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
+    if ws_err:
+        meta = _meta("", "inherit", "toolless", 0, 0, None)
+        return _result(_err(ws_err, "workspace_root is not an existing absolute directory.",
+                       "Pass an absolute path or configure an MCP root.", meta,
+                       offending="workspace_root"))
+    data = await anyio.to_thread.run_sync(lambda: jobs.cancel(cwd, job_id))
+    if data is None:
+        meta = _meta(cwd, "inherit", "toolless", 0, 0, None, workspace_source=ws_source)
+        return _result(_err("job_not_found", f"No job '{job_id}' in this workspace.",
+                       "Check the job_id, or start a new job; records expire after the TTL.",
+                       meta, offending="job_id"))
+    return _result(data)
+
+
 @mcp.tool(annotations=_STATUS_ANNOTATIONS, title="Claude CLI status & defaults",
           output_schema=STATUS_SCHEMA)
 def claude_status() -> ToolResult:
@@ -430,17 +638,25 @@ def claude_status() -> ToolResult:
     """
     found = shutil.which("claude") is not None
     version = None
+    authenticated: bool | None = None
+    auth_detail: str | None = None
+    supported: bool | None = None
     if found:
         try:
             version = subprocess.run(["claude", "--version"], capture_output=True,
                                      text=True, timeout=10).stdout.strip()
         except Exception:
             version = None
+        supported = version_supported(version)
+        # Free auth probe: lets an agent discover a logged-out CLI before
+        # spending money on a paid call that would only then fail auth.
+        authenticated, auth_detail = auth_status()
     d = defaults()
     resolved = ResolvedDefaults(
         config_mode=d.config_mode if d.config_mode in ("inherit", "scoped", "bare") else "inherit",
         access=d.access if d.access in ("toolless", "readonly") else "toolless",
         model=d.model,
+        effort=sanitize_effort(d.effort),
         max_budget_usd=clamp_budget(d.max_budget_usd),
         timeout_seconds=clamp_timeout(d.timeout_seconds),
         budget_bounds=[MIN_BUDGET_USD, MAX_BUDGET_USD],
@@ -449,11 +665,15 @@ def claude_status() -> ToolResult:
     status = StatusResult(
         claude_found=found,
         claude_version=version,
+        claude_authenticated=authenticated,
+        auth_detail=auth_detail,
+        version_supported=supported,
+        ready=bool(found and supported and authenticated),
         config_modes_available={
             "inherit": True, "scoped": True, "bare": bare_available(),
         },
         resolved_defaults=resolved,
-        caveat=("OAuth-preserving + CLAUDE.md-free is impossible in claude 2.1.161; "
+        caveat=("OAuth-preserving + CLAUDE.md-free is impossible in claude 2.1.x; "
                 "config_mode=bare needs ANTHROPIC_API_KEY."),
     )
     return _result(status.model_dump(mode="json", exclude_none=True))
@@ -474,14 +694,17 @@ def cc_codex_capabilities() -> ToolResult:
         version="0.1.0",
         transport="stdio",
         stability="experimental",
-        paid_tools=["claude_ask", "claude_review_changes", "claude_adversarial_review"],
-        free_tools=["claude_status", "cc_codex_capabilities"],
+        paid_tools=["claude_ask", "claude_review_changes", "claude_adversarial_review",
+                    "claude_review_changes_async"],
+        free_tools=["claude_status", "cc_codex_capabilities", "claude_job_status",
+                    "claude_job_result", "claude_job_cancel"],
         config_modes=["inherit", "scoped", "bare"],
         access_modes=["toolless", "readonly"],
         scope=[
             "independent code review of a git diff",
             "adversarial review of a plan/claim",
             "a free-form independent second opinion",
+            "background diff review with poll/result/cancel for long runs",
         ],
         negative_scope=[
             "does NOT edit code or run shell",

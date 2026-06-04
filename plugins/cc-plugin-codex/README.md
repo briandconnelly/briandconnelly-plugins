@@ -4,13 +4,14 @@ Call Claude Code from Codex for bounded, independent code review and second opin
 The mirror image of [`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc)'s
 review surface.
 Unlike that plugin, cc-plugin-codex is review-only: it does not delegate write-capable
-tasks or run background jobs.
+tasks. Reviews can run synchronously or as background jobs, but Claude only ever reviews.
 
 ## What it does
 
-An MCP server wraps the `claude` CLI and exposes four read-only tools to Codex:
-`claude_ask`, `claude_review_changes`, `claude_adversarial_review`, `claude_status`.
-Claude reviews; it never edits your code.
+An MCP server wraps the `claude` CLI and exposes read-only tools to Codex:
+`claude_ask`, `claude_review_changes`, `claude_adversarial_review`, and `claude_status`,
+plus `claude_review_changes_async` with `claude_job_status`/`claude_job_result`/
+`claude_job_cancel` for background reviews. Claude reviews; it never edits your code.
 
 Each tool publishes an output schema describing the `ok`-discriminated result
 (`{"ok": true, ...}` on success, `{"ok": false, "error": {code, message, repair}, ...}`
@@ -25,9 +26,13 @@ The paid tools (`claude_ask`, `claude_review_changes`, `claude_adversarial_revie
 **block synchronously** for up to `timeout_seconds` (default 180s, max 600s).
 They can be **cancelled** by the client, which terminates the underlying Claude process, but not resumed.
 Call `claude_status` first — it is
-free and reports the resolved defaults (`config_mode`, `access`, `model`, clamped
-`max_budget_usd`/`timeout_seconds`, and the clamp bounds) a no-argument paid call
+free and reports the resolved defaults (`config_mode`, `access`, `model`, `effort`,
+clamped `max_budget_usd`/`timeout_seconds`, and the clamp bounds) a no-argument paid call
 would use, so you can predict cost and behavior before spending.
+It also runs free readiness probes — `claude_authenticated` (so you can catch a
+logged-out CLI before paying for a call that would only then fail auth),
+`version_supported` (whether the installed CLI matches the supported major), and a
+combined `ready` flag.
 Every paid result also reports `meta.cost_usd` and `meta.usage` (token counts) so an
 agent can track actual spend across calls.
 
@@ -56,7 +61,7 @@ This v1 runs from the local checkout (not yet published to PyPI).
 | `scoped` | drops user-global settings + user MCP servers; keeps CLAUDE.md | your existing login |
 | `bare` | strips CLAUDE.md/memory/hooks | requires `ANTHROPIC_API_KEY` |
 
-Known limitation: in `claude 2.1.161` there is no OAuth-preserving way to fully strip
+Known limitation: in `claude 2.1.x` there is no OAuth-preserving way to fully strip
 `CLAUDE.md`/memory — full independence (`bare`) requires an API key.
 
 ## Access modes (`access`)
@@ -86,7 +91,40 @@ plugin install) so reviews target your project rather than the plugin checkout.
   user-level Claude hooks and settings; use `config_mode=bare` for full isolation.
 - Each call is paid and sends code to Anthropic; the server caps cost and time per call.
 
+## Background reviews
+
+`claude_review_changes_async` launches a diff review as a detached job and returns a
+handle `{ok, job_id, status:"running", …}` immediately instead of blocking the Codex
+turn. Poll `claude_job_status(job_id)`, then call `claude_job_result(job_id)` once
+`result_available` is true — the result is the **same** `ok`/`verdict`/`findings`
+envelope the synchronous tool returns, with `meta.job_id` set. `claude_job_cancel`
+terminates a running job. The status/result/cancel tools are free.
+
+The diff is gathered at launch (same secret redaction and `--max-budget-usd` cap as the
+sync path). Because the server drives one-shot `claude -p --output-format json`, a job's
+completion is simply "the process exited and wrote its JSON envelope" — no interactive
+log scraping. State lives on disk keyed by workspace, so status/result/cancel survive an
+MCP server restart. There is no daemon: overrunning jobs are stopped on the next status
+poll (deadline `CC_PLUGIN_CODEX_JOB_MAX_SECONDS`, default 1800s), records are cleaned up
+after `CC_PLUGIN_CODEX_JOB_TTL` (default 24h), and the budget cap bounds spend even for a
+job nobody polls. Job records (which contain the diff) are stored under
+`CC_PLUGIN_CODEX_STATE_DIR` (default `~/.cache/cc-plugin-codex/jobs`); anyone with access
+to that workspace's state directory can read or cancel its jobs.
+
+## Reasoning effort (`effort`)
+
+Each paid tool accepts `effort` (`low|medium|high|xhigh|max`), passed through to the
+`claude` CLI's `--effort`. It defaults to `xhigh` — review depth is the whole point of
+this server. Lower it (`high`/`medium`) to trade rigor for cost on routine reviews, or
+set the default with `CC_PLUGIN_CODEX_EFFORT`. An invalid per-call `effort` is a typed
+enum, so it is rejected as a schema validation error before the tool runs; an
+unrecognized `CC_PLUGIN_CODEX_EFFORT` env value instead falls back to the default.
+
 ## Environment variables
 
 `CC_PLUGIN_CODEX_CLAUDE_CONFIG`, `CC_PLUGIN_CODEX_ACCESS`, `CC_PLUGIN_CODEX_MODEL`,
-`CC_PLUGIN_CODEX_MAX_BUDGET_USD`, `CC_PLUGIN_CODEX_TIMEOUT_SECONDS`, `ANTHROPIC_API_KEY`.
+`CC_PLUGIN_CODEX_EFFORT`, `CC_PLUGIN_CODEX_MAX_BUDGET_USD`,
+`CC_PLUGIN_CODEX_TIMEOUT_SECONDS`, `ANTHROPIC_API_KEY`.
+
+Background jobs add: `CC_PLUGIN_CODEX_STATE_DIR`, `CC_PLUGIN_CODEX_JOB_MAX_SECONDS`,
+`CC_PLUGIN_CODEX_JOB_TTL`, `CC_PLUGIN_CODEX_JOB_MAX_COUNT`.
