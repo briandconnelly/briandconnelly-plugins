@@ -6,6 +6,11 @@ import os
 import re
 from dataclasses import dataclass
 
+from cc_plugin_codex import cli_contract
+# Re-exported so existing `from ...config import VALID_EFFORTS` callers keep
+# working; the canonical definition lives in cli_contract.
+from cc_plugin_codex.cli_contract import DEFAULT_EFFORT, VALID_EFFORTS
+
 EMPTY_MCP = '{"mcpServers":{}}'
 
 MIN_BUDGET_USD, MAX_BUDGET_USD = 0.01, 5.00
@@ -13,16 +18,7 @@ MIN_TIMEOUT_SECONDS, MAX_TIMEOUT_SECONDS = 10, 600
 DEFAULT_MAX_INPUT_BYTES = 200_000
 DEFAULT_GIT_TIMEOUT_SECONDS = 60
 
-# Reasoning effort levels the `claude` CLI accepts for `--effort`. We default to
-# a high level because the whole value of this server is review depth; lower it
-# per-call (or via CC_PLUGIN_CODEX_EFFORT) to trade rigor for cost on routine work.
-VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
-DEFAULT_EFFORT = "xhigh"
-
-# Major version of the `claude` CLI this server is built against. claude_status
-# reports whether the installed CLI matches, so a future breaking change in the
-# CLI contract is visible for free instead of only surfacing mid paid call.
-SUPPORTED_MAJOR = 2
+__all__ = ["VALID_EFFORTS", "DEFAULT_EFFORT"]  # re-exports; silence unused-import lints
 
 INDEPENDENT_CRITIC_PROMPT = (
     "You are being asked for an independent critique of Codex's work.\n"
@@ -89,17 +85,35 @@ def sanitize_effort(value: str | None) -> str:
     return value if value in VALID_EFFORTS else DEFAULT_EFFORT
 
 
+def supported_majors() -> frozenset[int]:
+    """The `claude` CLI major versions this server is built against.
+
+    Defaults to cli_contract.SUPPORTED_MAJORS; overridable via
+    CC_PLUGIN_CODEX_SUPPORTED_MAJORS (comma-separated ints) so a user can opt into
+    an untested major. Any parse error falls back to the built-in set rather than
+    raising."""
+    raw = os.environ.get(cli_contract.SUPPORTED_MAJORS_ENV)
+    if not raw:
+        return cli_contract.SUPPORTED_MAJORS
+    try:
+        parsed = frozenset(int(part) for part in raw.split(",") if part.strip())
+    except ValueError:
+        return cli_contract.SUPPORTED_MAJORS
+    return parsed or cli_contract.SUPPORTED_MAJORS
+
+
 def version_supported(version: str | None) -> bool | None:
-    """Whether the installed `claude --version` string matches SUPPORTED_MAJOR.
+    """Whether the installed `claude --version` major is in supported_majors().
 
     Returns None when the version is unknown/unparseable (so callers can report
-    'unknown' rather than a false 'unsupported')."""
+    'unknown' rather than a false 'unsupported'). Advisory only: claude_status
+    surfaces a mismatch as a warning and never blocks paid calls on it."""
     if not version:
         return None
     match = re.search(r"(\d+)\.\d+\.\d+", version)
     if not match:
         return None
-    return int(match.group(1)) == SUPPORTED_MAJOR
+    return int(match.group(1)) in supported_majors()
 
 
 def clamp_budget(value: float) -> float:

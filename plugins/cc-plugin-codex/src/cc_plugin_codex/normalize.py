@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
+from cc_plugin_codex import cli_contract
+from cc_plugin_codex.claude import contract_changed_error
 from cc_plugin_codex.schemas import (
     ContextSummary,
     ErrorInfo,
@@ -169,8 +171,12 @@ def normalize_envelope(
     # Plumb cost and usage onto meta regardless of success/error path.
     apply_cost_usage(meta, env)
 
-    if env.get("is_error") or env.get("subtype") not in (None, "success"):
+    if env.get("is_error") or env.get("subtype") not in cli_contract.SUCCESS_SUBTYPES:
         detail = (env.get("result") or "").strip() or (env.get("subtype") or "unknown error")
+        # A drift signature can arrive as a zero-exit is_error envelope (not just a
+        # nonzero exit), so classify it the same way here.
+        if cli_contract.is_contract_drift(env.get("result"), env.get("subtype")):
+            return _error(contract_changed_error(), meta)
         return _error(
             ErrorInfo(
                 code="nonzero_exit",

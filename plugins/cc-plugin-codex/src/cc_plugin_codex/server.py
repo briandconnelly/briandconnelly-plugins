@@ -15,14 +15,14 @@ from fastmcp import Context, FastMCP
 from fastmcp.tools.tool import ToolResult
 from pydantic import Field
 
-from cc_plugin_codex import __version__
+from cc_plugin_codex import __version__, cli_contract, preflight
 from cc_plugin_codex.claude import (
     auth_status, build_command, classify_failure, run_claude_async,
 )
 from cc_plugin_codex.config import (
     MAX_BUDGET_USD, MAX_TIMEOUT_SECONDS, MIN_BUDGET_USD, MIN_TIMEOUT_SECONDS,
     VALID_EFFORTS, bare_available, clamp_budget, clamp_timeout, defaults,
-    max_input_bytes, sanitize_effort, version_supported,
+    max_input_bytes, sanitize_effort, supported_majors, version_supported,
 )
 from cc_plugin_codex.context import (
     MAX_DIFF_BYTES, InvalidBaseError, InvalidScopeError, gather_context,
@@ -89,14 +89,16 @@ def _meta(cwd: str, config_mode: str, access: str, timeout: int, elapsed: int,
           truncated: bool = False, hint: str | None = None,
           workspace_source: str | None = None,
           requested_budget: float | None = None,
-          redacted_paths: list[str] | None = None) -> Meta:
+          redacted_paths: list[str] | None = None,
+          compat_warnings: list[str] | None = None) -> Meta:
     return Meta(cwd=cwd, config_mode=config_mode, access=access, scope=scope, base=base,
                 timeout_seconds=timeout, elapsed_ms=elapsed, command_exit_code=exit_code,
                 truncated=truncated, truncation_hint=hint, fingerprint=FINGERPRINT,
                 workspace_source=workspace_source,
                 workspace_warning=workspace_warning_for(workspace_source, cwd),
                 requested_max_budget_usd=requested_budget,
-                redacted_paths=redacted_paths or [])
+                redacted_paths=redacted_paths or [],
+                compat_warnings=compat_warnings or [])
 
 
 def _err(code: str, message: str, repair: str, meta: Meta,
@@ -279,11 +281,11 @@ async def _execute(tool, payload, r: Resolved, cwd,
                    scope=None, base=None, context_text="", context_summary=None,
                    workspace_source=None, redacted_paths: list[str] | None = None) -> dict:
     prompt = build_prompt(tool, payload, context_text)
-    cmd = build_command(prompt, r.config_mode, r.access, r.model, r.budget, r.effort)
+    cmd, dropped = build_command(prompt, r.config_mode, r.access, r.model, r.budget, r.effort)
     run = await run_claude_async(cmd, cwd=cwd, timeout_seconds=r.timeout)
     meta = _meta(cwd, r.config_mode, r.access, r.timeout, run.elapsed_ms, run.exit_code,
                  scope, base, workspace_source=workspace_source, requested_budget=r.budget,
-                 redacted_paths=redacted_paths)
+                 redacted_paths=redacted_paths, compat_warnings=dropped)
     if run.exit_code != 0 or run.timed_out:
         # A non-zero exit can still carry a cost-bearing JSON envelope (e.g.
         # budget_exceeded); report what it spent when available.
@@ -587,7 +589,7 @@ async def claude_review_changes_async(
         return _result(_empty_diff_result("claude_review_changes", meta, ctx_data.summary))
     prompt = build_prompt("claude_review_changes",
                           {"scope": scope, "base": base, "focus": focus}, ctx_data.text)
-    cmd = build_command(prompt, r.config_mode, r.access, r.model, r.budget, r.effort)
+    cmd, dropped = build_command(prompt, r.config_mode, r.access, r.model, r.budget, r.effort)
     cfg = JobConfig(kind="claude_review_changes", config_mode=r.config_mode,
                     access=r.access, scope=scope, base=base, detail=r.detail,
                     timeout_seconds=jobs.max_seconds(), workspace_source=ws_source,
@@ -602,7 +604,7 @@ async def claude_review_changes_async(
         ttl_seconds=jobs.ttl_seconds(),
         meta=_meta(cwd, r.config_mode, r.access, job_timeout, 0, None, scope, base,
                    workspace_source=ws_source, requested_budget=r.budget,
-                   redacted_paths=ctx_data.redacted_paths),
+                   redacted_paths=ctx_data.redacted_paths, compat_warnings=dropped),
     )
     return _result(started.model_dump(mode="json", exclude_none=True))
 
@@ -790,21 +792,38 @@ def claude_status() -> ToolResult:
     Free and read-only. Use first when unsure whether paid tools can run, or to
     inspect config_mode/access/model/effort/budget/timeout defaults.
     """
-    found = shutil.which("claude") is not None
+    found = shutil.which(cli_contract.CLAUDE_BIN) is not None
     version = None
     authenticated: bool | None = None
     auth_detail: str | None = None
     supported: bool | None = None
+    version_warning: str | None = None
+    flags_warning: str | None = None
     if found:
         try:
-            version = subprocess.run(["claude", "--version"], capture_output=True,
-                                     text=True, timeout=10).stdout.strip()
+            version = subprocess.run(
+                [cli_contract.CLAUDE_BIN, *cli_contract.VERSION_ARGS],
+                capture_output=True, text=True, timeout=10).stdout.strip()
         except Exception:
             version = None
         supported = version_supported(version)
+        if supported is False:
+            version_warning = (
+                f"installed claude version {version!r} is outside this plugin's "
+                f"tested major(s) {sorted(supported_majors())}; tools may still work — "
+                "file an issue if they do not, or set "
+                f"{cli_contract.SUPPORTED_MAJORS_ENV} to silence this")
         # Free auth probe: lets an agent discover a logged-out CLI before
         # spending money on a paid call that would only then fail auth.
         authenticated, auth_detail = auth_status()
+        # Free flag-contract probe: warn if a guarantee-bearing flag is missing
+        # from `claude --help` (an early drift signal), without gating execution.
+        missing = preflight.missing_expected_flags(preflight.flag_support())
+        if missing:
+            flags_warning = (
+                "claude --help did not list expected flags: "
+                f"{', '.join(missing)}; the plugin may need an update for your "
+                "claude version")
     d = defaults()
     resolved = ResolvedDefaults(
         config_mode=d.config_mode if d.config_mode in ("inherit", "scoped", "bare") else "inherit",
@@ -822,7 +841,12 @@ def claude_status() -> ToolResult:
         claude_authenticated=authenticated,
         auth_detail=auth_detail,
         version_supported=supported,
-        ready=bool(found and supported and authenticated),
+        version_warning=version_warning,
+        flags_warning=flags_warning,
+        # Version is advisory, not gating: a major outside the tested range warns
+        # (version_warning) but does not flip ready, so a claude major bump no
+        # longer self-blocks an authenticated, installed CLI.
+        ready=bool(found and authenticated),
         config_modes_available={
             "inherit": True, "scoped": True, "bare": bare_available(),
         },

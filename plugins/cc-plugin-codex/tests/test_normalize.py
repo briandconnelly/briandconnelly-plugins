@@ -171,3 +171,20 @@ def test_normalize_reports_cost_on_error_envelope():
     assert res["ok"] is False
     assert res["meta"]["cost_usd"] == 0.004
     assert res["meta"]["usage"]["input_tokens"] == 20
+
+
+def test_zero_exit_is_error_drift_is_cli_contract_changed():
+    # A drift signature can arrive as a zero-exit envelope with is_error=true, not
+    # only as a nonzero process exit; normalize_envelope must label it too.
+    env = json.dumps({"type": "result", "is_error": True, "subtype": "error",
+                      "result": "error: unknown option '--effort'"})
+    out = normalize_envelope("claude_review_changes", env, _meta(), detail="summary")
+    assert out["ok"] is False
+    assert out["error"]["code"] == "cli_contract_changed"
+
+
+def test_zero_exit_is_error_without_drift_stays_nonzero_exit():
+    env = json.dumps({"type": "result", "is_error": True, "subtype": "error",
+                      "result": "the model declined to answer"})
+    out = normalize_envelope("claude_review_changes", env, _meta(), detail="summary")
+    assert out["error"]["code"] == "nonzero_exit"

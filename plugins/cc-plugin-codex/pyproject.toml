@@ -1,6 +1,6 @@
 [project]
 name = "cc-plugin-codex"
-version = "0.1.2"
+version = "0.1.3"
 description = "Call Claude Code from Codex for bounded, independent code review and second opinions"
 requires-python = ">=3.10"
 dependencies = [

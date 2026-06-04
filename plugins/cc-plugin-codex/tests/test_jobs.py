@@ -43,6 +43,12 @@ def _sleep_cmd(seconds=30):
     return ["sh", "-c", f"sleep {seconds}"]
 
 
+def _drift_cmd(message="error: unknown option '--effort'"):
+    # Write a contract-drift signature to stderr and leave stdout (result.json)
+    # empty, so the job is "failed" with a drift-bearing stderr tail.
+    return ["sh", "-c", "printf '%s' \"$0\" 1>&2; exit 2", message]
+
+
 @pytest.fixture(autouse=True)
 def _state_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("CC_PLUGIN_CODEX_STATE_DIR", str(tmp_path / "state"))
@@ -190,3 +196,27 @@ def test_consume_deletes_record(tmp_path):
     payload, found = jobs.result(cwd, job_id, consume=True)
     assert found is True and payload["ok"] is True
     assert jobs.status(cwd, job_id) is None  # gone after consume
+
+
+def test_failed_job_with_drift_stderr_is_cli_contract_changed(tmp_path):
+    # The async twin of the sync cli_contract_changed path: a job that exits
+    # nonzero with an unknown-flag stderr must classify as cli_contract_changed,
+    # not a generic job_failed.
+    cwd = str(tmp_path)
+    job_id, _ = jobs.start_job(_drift_cmd(), cwd, _cfg())
+    st = _await_done(cwd, job_id)
+    assert st["status"] == "failed"
+    payload, found = jobs.result(cwd, job_id)
+    assert found is True
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "cli_contract_changed"
+
+
+def test_failed_job_without_drift_stays_job_failed(tmp_path):
+    cwd = str(tmp_path)
+    job_id, _ = jobs.start_job(
+        ["sh", "-c", "printf 'boom' 1>&2; exit 1"], cwd, _cfg())
+    _await_done(cwd, job_id)
+    payload, found = jobs.result(cwd, job_id)
+    assert found is True
+    assert payload["error"]["code"] == "job_failed"

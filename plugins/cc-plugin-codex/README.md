@@ -154,7 +154,19 @@ unrecognized `CC_PLUGIN_CODEX_EFFORT` env value instead falls back to the defaul
 `CC_PLUGIN_CODEX_CLAUDE_CONFIG`, `CC_PLUGIN_CODEX_ACCESS`, `CC_PLUGIN_CODEX_MODEL`,
 `CC_PLUGIN_CODEX_EFFORT`, `CC_PLUGIN_CODEX_MAX_BUDGET_USD`,
 `CC_PLUGIN_CODEX_TIMEOUT_SECONDS`, `CC_PLUGIN_CODEX_MAX_INPUT_BYTES`,
-`CC_PLUGIN_CODEX_GIT_TIMEOUT_SECONDS`, `ANTHROPIC_API_KEY`.
+`CC_PLUGIN_CODEX_GIT_TIMEOUT_SECONDS`, `CC_PLUGIN_CODEX_SUPPORTED_MAJORS`,
+`ANTHROPIC_API_KEY`.
 
 Background jobs add: `CC_PLUGIN_CODEX_STATE_DIR`, `CC_PLUGIN_CODEX_JOB_MAX_SECONDS`,
 `CC_PLUGIN_CODEX_JOB_TTL`, `CC_PLUGIN_CODEX_JOB_MAX_COUNT`.
+
+## Compatibility
+
+This server couples to the external `claude` CLI (and the Codex host).
+Every assumption — flags, JSON-envelope keys, subcommands, accepted effort levels,
+supported version range — is centralized in `src/cc_plugin_codex/cli_contract.py`
+and documented in [COMPATIBILITY.md](./COMPATIBILITY.md), which also covers what
+breaks on an upstream change and how to fix it.
+When a guarantee-bearing flag or the CLI contract drifts, paid tools fail loudly
+with a `cli_contract_changed` error (no silent weakening, no spend) and
+`claude_status` surfaces a version or flag warning for free.

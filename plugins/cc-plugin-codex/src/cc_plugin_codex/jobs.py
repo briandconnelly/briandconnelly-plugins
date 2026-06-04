@@ -445,14 +445,25 @@ _STATE_TO_ERROR = {
 
 
 def _job_error(meta: dict, state: str, jd: Path) -> dict:
+    from cc_plugin_codex.cli_contract import is_contract_drift
     from cc_plugin_codex.schemas import ErrorInfo, ErrorResult
     if state == "failed":
-        code, message, repair = (
-            "job_failed",
-            f"The job failed without producing a result. {_stderr_tail(jd) or ''}".strip(),
-            "Run claude_status to check the CLI is installed and authenticated, then retry.",
-        )
-        retryable = True
+        tail = _stderr_tail(jd)
+        # A failed job whose stderr carries a drift signature is the async twin of
+        # the sync cli_contract_changed path — classify it the same way so async
+        # callers get the same actionable error instead of a generic job_failed.
+        if is_contract_drift(tail):
+            from cc_plugin_codex.claude import contract_changed_error
+            info = contract_changed_error()
+            code, message, repair, retryable = (
+                info.code, info.message, info.repair, info.retryable)
+        else:
+            code, message, repair = (
+                "job_failed",
+                f"The job failed without producing a result. {tail or ''}".strip(),
+                "Run claude_status to check the CLI is installed and authenticated, then retry.",
+            )
+            retryable = True
     else:
         code, message, repair = _STATE_TO_ERROR.get(
             state, ("job_failed", "The job did not complete.", "Start a new job."))
