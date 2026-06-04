@@ -82,6 +82,19 @@ def test_job_done_returns_normalized_result(tmp_path):
     assert payload["meta"]["cost_usd"] == 0.0123
 
 
+def test_job_meta_carries_requested_budget_and_warning(tmp_path):
+    cwd = str(tmp_path)
+    job_id, _ = jobs.start_job(
+        _emit_cmd(), cwd,
+        _cfg(workspace_source="cwd", requested_max_budget_usd=0.30))
+    _await_done(cwd, job_id)
+    payload, found = jobs.result(cwd, job_id)
+    assert found is True
+    assert payload["meta"]["requested_max_budget_usd"] == 0.30
+    # workspace_source=cwd must surface the footgun warning on the rebuilt job meta.
+    assert "workspace_root" in payload["meta"]["workspace_warning"]
+
+
 def test_job_running_then_result_says_job_running(tmp_path):
     cwd = str(tmp_path)
     job_id, _ = jobs.start_job(_sleep_cmd(), cwd, _cfg())

@@ -199,7 +199,7 @@ async def test_claude_ask_returns_normalized(fake_claude):
     data = structured(result)
     assert data["ok"] is True
     assert data["verdict"] == "concerns"
-    assert data["meta"]["fingerprint"] == "cc-plugin-codex/0.1/schema-8"
+    assert data["meta"]["fingerprint"] == "cc-plugin-codex/0.1/schema-9"
 
 
 async def test_invalid_enum_param_rejected_by_schema(fake_claude):
@@ -554,7 +554,7 @@ async def test_capabilities_tool_returns_structured_contract():
     async with Client(mcp) as client:
         result = await client.call_tool("cc_codex_capabilities", {})
     data = structured(result)
-    assert data["fingerprint"] == "cc-plugin-codex/0.1/schema-8"
+    assert data["fingerprint"] == "cc-plugin-codex/0.1/schema-9"
     assert data["transport"] == "stdio"
     assert set(data["paid_tools"]) == {
         "claude_ask", "claude_review_changes", "claude_adversarial_review",
@@ -566,6 +566,150 @@ async def test_capabilities_tool_returns_structured_contract():
     assert data["negative_scope"]            # non-empty list of what it won't do
     assert data["prerequisites"]
     assert "fingerprint" in data["deprecation_policy"]
+
+
+async def test_list_tools_includes_new_free_tools():
+    names = set(await _tools_by_name())
+    assert {"claude_review_dry_run", "claude_job_list", "claude_capabilities"} <= names
+
+
+async def test_claude_capabilities_alias_matches_canonical():
+    async with Client(mcp) as client:
+        canon = structured(await client.call_tool("cc_codex_capabilities", {}))
+        alias = structured(await client.call_tool("claude_capabilities", {}))
+    # request_id-free contract: the two must be byte-for-byte identical.
+    assert canon == alias
+    assert "claude_review_dry_run" in alias["free_tools"]
+    assert "claude_job_list" in alias["free_tools"]
+    # The readonly redaction-bypass caveat is now in the negative scope.
+    assert any("readonly" in s for s in alias["negative_scope"])
+
+
+async def test_dry_run_previews_without_spending(monkeypatch, git_repo):
+    # No fake_claude: a real paid call would fail. The dry-run must not call Claude.
+    monkeypatch.chdir(git_repo)
+    async with Client(mcp) as client:
+        data = structured(await client.call_tool(
+            "claude_review_dry_run",
+            {"scope": "working_tree", "workspace_root": str(git_repo)}))
+    assert data["ok"] is True
+    assert data["tool"] == "claude_review_dry_run"
+    assert data["cwd"] == str(git_repo)
+    assert data["workspace_source"] == "param"
+    assert data["diff_bytes"] > 0
+    assert data["max_diff_bytes"] > 0
+    assert data["truncated"] is False
+    assert data["context_summary"]["files_changed"] == 1
+    assert "fingerprint" in data
+
+
+async def test_dry_run_reports_redaction_count(monkeypatch, git_repo):
+    import subprocess as _sp
+    (git_repo / ".env").write_text("API_KEY=supersecret\n")
+    _sp.run(["git", "add", "-Nf", ".env"], cwd=git_repo, check=True)
+    async with Client(mcp) as client:
+        data = structured(await client.call_tool(
+            "claude_review_dry_run",
+            {"scope": "working_tree", "workspace_root": str(git_repo)}))
+    assert data["redacted_paths_count"] >= 1
+    assert any(".env" in p for p in data["redacted_paths"])
+
+
+async def test_dry_run_bad_base_is_structured_error(git_repo):
+    async with Client(mcp) as client:
+        data = structured(await client.call_tool(
+            "claude_review_dry_run",
+            {"scope": "branch", "base": "-badref", "workspace_root": str(git_repo)},
+            raise_on_error=False))
+    assert data["ok"] is False
+    assert data["error"]["code"] == "invalid_base"
+
+
+async def test_cwd_resolution_sets_workspace_warning(fake_claude, monkeypatch, git_repo):
+    # When the workspace falls back to cwd (no param, no roots), the success meta
+    # must carry workspace_warning so an agent can notice the footgun.
+    monkeypatch.chdir(git_repo)
+    async with Client(mcp) as client:
+        data = structured(await client.call_tool(
+            "claude_review_changes", {"scope": "working_tree"}))
+    assert data["ok"] is True
+    assert data["meta"]["workspace_source"] == "cwd"
+    assert "workspace_root" in data["meta"]["workspace_warning"]
+
+
+async def test_param_resolution_has_no_workspace_warning(fake_claude, git_repo):
+    async with Client(mcp) as client:
+        data = structured(await client.call_tool(
+            "claude_review_changes",
+            {"scope": "working_tree", "workspace_root": str(git_repo)}))
+    assert data["ok"] is True
+    assert "workspace_warning" not in data["meta"]  # None is dropped by exclude_none
+
+
+async def test_meta_echoes_requested_budget(fake_claude, monkeypatch, git_repo):
+    monkeypatch.chdir(git_repo)
+    async with Client(mcp) as client:
+        data = structured(await client.call_tool(
+            "claude_ask", {"prompt": "x", "max_budget_usd": 0.25}))
+    assert data["meta"]["requested_max_budget_usd"] == 0.25
+
+
+async def test_status_auth_detail_is_redacted(monkeypatch):
+    # claude_status must not leak the account email/org from `claude auth status`.
+    import cc_plugin_codex.claude as cl
+
+    class _Proc:
+        returncode = 0
+        stdout = "Logged in as alice@example.com (org: Acme Corp)"
+        stderr = ""
+
+    monkeypatch.setattr(cl.subprocess, "run", lambda *a, **k: _Proc())
+    logged_in, detail = cl.auth_status()
+    assert logged_in is True
+    assert detail and "alice@example.com" not in detail
+    assert "Acme Corp" not in detail
+
+
+async def test_job_list_recovers_job_ids(monkeypatch, git_repo, tmp_path):
+    import json as _json
+    import time as _time
+
+    import cc_plugin_codex.server as srv
+
+    monkeypatch.setenv("CC_PLUGIN_CODEX_STATE_DIR", str(tmp_path / "state"))
+    inner = {"summary": "ok", "verdict": "pass", "confidence": "high",
+             "findings": [], "questions": [], "assumptions": []}
+    envelope = _json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                            "result": _json.dumps(inner), "total_cost_usd": 0.02})
+    monkeypatch.setattr(srv, "build_command",
+                        lambda *a, **k: ["sh", "-c", "printf '%s' \"$0\"", envelope])
+
+    async with Client(mcp) as client:
+        empty = structured(await client.call_tool(
+            "claude_job_list", {"workspace_root": str(git_repo)}))
+        assert empty["jobs"] == []
+
+        started = structured(await client.call_tool(
+            "claude_review_changes_async",
+            {"scope": "working_tree", "workspace_root": str(git_repo)}))
+        job_id = started["job_id"]
+        deadline = _time.time() + 5
+        while _time.time() < deadline:
+            st = structured(await client.call_tool(
+                "claude_job_status",
+                {"job_id": job_id, "workspace_root": str(git_repo)}))
+            if st["status"] == "done":
+                break
+            await anyio.sleep(0.05)
+
+        listing = structured(await client.call_tool(
+            "claude_job_list", {"workspace_root": str(git_repo)}))
+    assert listing["ok"] is True
+    ids = [j["job_id"] for j in listing["jobs"]]
+    assert job_id in ids
+    job = next(j for j in listing["jobs"] if j["job_id"] == job_id)
+    assert job["status"] == "done"
+    assert job["result_available"] is True
 
 
 async def test_paid_failure_reports_cost_on_error_meta(monkeypatch):

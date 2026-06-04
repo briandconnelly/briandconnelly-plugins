@@ -11,8 +11,10 @@ tasks. Reviews can run synchronously or as background jobs, but Claude only ever
 An MCP server wraps the `claude` CLI and exposes read-only tools to Codex:
 `claude_ask`, `claude_review_changes`, `claude_adversarial_review`, and `claude_status`,
 plus `claude_review_changes_async` with `claude_job_status`/`claude_job_result`/
-`claude_job_consume_result`/`claude_job_cancel` for background reviews. Claude reviews;
-it never edits your code.
+`claude_job_consume_result`/`claude_job_cancel`/`claude_job_list` for background reviews.
+`claude_review_dry_run` previews workspace/diff-size/redaction for free before a paid
+review, and `cc_codex_capabilities` (alias `claude_capabilities`) returns the capability
+contract. Claude reviews; it never edits your code.
 
 Each tool publishes an output schema describing the `ok`-discriminated result
 (`{"ok": true, ...}` on success, `{"ok": false, "error": {code, message, repair}, ...}`
@@ -96,7 +98,10 @@ plugin install) so reviews target your project rather than the plugin checkout.
   when the workspace may contain secrets.
 - All `config_mode`s drop your other MCP servers, but `inherit`/`scoped` still load your
   user-level Claude hooks and settings; use `config_mode=bare` for full isolation.
-- Each call is paid and sends code to Anthropic; the server caps cost and time per call.
+- Each call is paid and sends code to Anthropic. `max_budget_usd` is a best-effort stop
+  threshold (enforced by the Claude CLI), not a hard cap — reported `meta.cost_usd` can
+  exceed it; `meta.requested_max_budget_usd` echoes the value sent. `timeout_seconds`
+  bounds wall-clock time per call.
 
 ## Background reviews
 
@@ -110,15 +115,15 @@ is read-only and leaves the stored record available until TTL cleanup. Use
 `claude_job_cancel` terminates a running job. The status/result/consume/cancel tools
 are free.
 
-The diff is gathered at launch (same secret redaction and `--max-budget-usd` cap as the
-sync path). Because the server drives one-shot `claude -p --output-format json`, a job's
+The diff is gathered at launch (same secret redaction and `--max-budget-usd` stop
+threshold as the sync path). Because the server drives one-shot `claude -p --output-format json`, a job's
 completion is simply "the process exited and wrote its JSON envelope" — no interactive
 log scraping. State lives on disk keyed by workspace, so status/result/cancel survive an
 MCP server restart. There is no daemon: overrunning jobs are stopped on the next status
 poll (deadline `CC_PLUGIN_CODEX_JOB_MAX_SECONDS`, default 1800s). Job start/status
 responses include `poll_after_ms`, `ttl_seconds`, and `expires_at` where known.
 Records are cleaned up after `CC_PLUGIN_CODEX_JOB_TTL` (default 24h), and the budget
-cap bounds spend even for a job nobody polls. Job records (which contain the diff)
+stop threshold still applies (best-effort) even for a job nobody polls. Job records (which contain the diff)
 are stored under
 `CC_PLUGIN_CODEX_STATE_DIR` (default `~/.cache/cc-plugin-codex/jobs`); anyone with access
 to that workspace's state directory can read or cancel its jobs.
