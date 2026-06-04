@@ -22,7 +22,7 @@ Do NOT call Claude in a loop, and never call Claude just because Claude suggeste
 
 - `claude_ask` — a free-form second opinion or recommendation.
 - `claude_review_changes` — Claude reviews your git diff (`scope` = working_tree | staged | branch).
-- `claude_review_changes_async` — same review as a background job for large diffs or when you want to keep working; returns a `job_id`. Poll `claude_job_status`, then `claude_job_result` (same envelope as the sync tool); `claude_job_cancel` to stop it.
+- `claude_review_changes_async` — same review as a background job for large diffs or when you want to keep working; returns a `job_id`. Poll `claude_job_status`, then `claude_job_result` (same envelope as the sync tool). Use `claude_job_consume_result` only when you want to fetch and delete the stored record; use `claude_job_cancel` to stop it.
 - `claude_adversarial_review` — Claude attacks a plan/claim and lists the strongest counterarguments.
 - `claude_status` — free readiness check: reports whether `claude` is installed, authenticated (`claude_authenticated`), version-compatible (`version_supported`), and overall `ready`, plus the resolved defaults a no-arg call would use. Run it first if a call fails, or to confirm readiness before spending.
 
@@ -38,5 +38,6 @@ Do NOT call Claude in a loop, and never call Claude just because Claude suggeste
 - Each call is PAID and sends your code/diff to Anthropic. Call deliberately.
 - The server never sends `.env`/secret files; redaction is filename-based, not content-scanning, so do not paste secrets into prompts and do not rely on it to catch secrets hardcoded inside ordinary source files.
 - Default access is `toolless` (Claude gets no tools) and `config_mode=inherit`; both access modes are read-only (Claude never gets write/Bash). Use `config_mode=bare` only when you want a fully independent reviewer and have `ANTHROPIC_API_KEY` set.
+- When client MCP roots are available, explicit `workspace_root` values must be inside one of those roots; omit `workspace_root` to use the first root.
 - Cap cost/time with `max_budget_usd` and `timeout_seconds` for large reviews.
 - Reviews run at `effort=xhigh` by default for depth. Lower `effort` to `high`/`medium` to save cost on routine changes; raise to `max` for the most subtle ones.

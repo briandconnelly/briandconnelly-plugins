@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 # Bump this whenever the agent-visible surface changes: tool names, input or
 # output schemas, the ErrorCode set, the config_mode/access/scope/detail value
 # sets, or the capability guarantees in CAPABILITY_SUMMARY. Clients cache by it.
-FINGERPRINT = "cc-plugin-codex/0.1/schema-6"
+FINGERPRINT = "cc-plugin-codex/0.1/schema-7"
 
 Severity = Literal["critical", "high", "medium", "low", "nit"]
 Verdict = Literal["pass", "concerns", "fail", "unknown"]
@@ -25,9 +25,9 @@ Effort = Literal["low", "medium", "high", "xhigh", "max"]
 JobState = Literal["running", "done", "failed", "cancelled", "timeout"]
 
 ErrorCode = Literal[
-    "claude_not_found", "claude_auth_required", "api_key_required",
+    "claude_not_found", "claude_auth_required", "api_key_missing", "api_key_invalid",
     "unsupported_config_mode", "unsupported_access", "invalid_scope", "invalid_base",
-    "invalid_workspace_root",
+    "invalid_workspace_root", "workspace_outside_roots",
     "context_too_large", "timeout", "budget_exceeded", "claude_permission_error",
     "nonzero_exit", "invalid_json", "internal_error",
     # Background-job lifecycle errors (claude_job_result for a non-done job):
@@ -165,6 +165,7 @@ class CapabilitiesResult(BaseModel):
     scope: list[str]            # what this server is for
     negative_scope: list[str]   # what it deliberately does NOT do
     prerequisites: list[str]
+    deprecation_policy: str
 
 
 class JobStarted(BaseModel):
@@ -176,6 +177,9 @@ class JobStarted(BaseModel):
     status: JobState = "running"
     started_at: str            # ISO-8601 UTC
     deadline_seconds: int      # wall-clock cap after which a poll reaps the job
+    poll_after_ms: int = 1000
+    ttl_seconds: int
+    expires_at: Optional[str] = None
     meta: Meta
     fingerprint: str = FINGERPRINT
 
@@ -190,6 +194,9 @@ class JobStatus(BaseModel):
     started_at: str
     elapsed_ms: int
     deadline_seconds: int
+    poll_after_ms: int = 1000
+    ttl_seconds: int
+    expires_at: Optional[str] = None
     result_available: bool = False   # true once status == done
     cost_usd: Optional[float] = None  # populated for terminal jobs that spent
     detail: Optional[str] = None      # short human hint (e.g. failure reason)

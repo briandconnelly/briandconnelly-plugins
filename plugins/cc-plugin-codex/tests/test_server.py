@@ -37,11 +37,13 @@ async def test_first_root_skips_non_file_uris():
     assert await _first_root(ctx) == "/ok"
 
 
-async def test_resolve_workspace_param_beats_roots(tmp_path):
-    ctx = _FakeRoots(["file:///should/not/win"])
-    path, err, source = await _resolve_workspace(str(tmp_path), ctx)
+async def test_resolve_workspace_param_inside_root_beats_root_default(tmp_path):
+    child = tmp_path / "repo"
+    child.mkdir()
+    ctx = _FakeRoots([f"file://{tmp_path}"])
+    path, err, source = await _resolve_workspace(str(child), ctx)
     assert err is None
-    assert path == str(tmp_path)
+    assert path == str(child)
     assert source == "param"
 
 
@@ -51,6 +53,29 @@ async def test_resolve_workspace_uses_roots_when_no_param(tmp_path):
     assert err is None
     assert path == str(tmp_path)
     assert source == "roots"
+
+
+async def test_resolve_workspace_param_must_be_inside_roots(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    ctx = _FakeRoots([f"file://{root}"])
+    path, err, source = await _resolve_workspace(str(outside), ctx)
+    assert path is None
+    assert err == "workspace_outside_roots"
+    assert source is None
+
+
+async def test_resolve_workspace_param_inside_roots_allowed(tmp_path):
+    root = tmp_path / "root"
+    child = root / "repo"
+    child.mkdir(parents=True)
+    ctx = _FakeRoots([f"file://{root}"])
+    path, err, source = await _resolve_workspace(str(child), ctx)
+    assert err is None
+    assert path == str(child)
+    assert source == "param"
 
 
 async def test_resolve_workspace_falls_back_to_cwd(monkeypatch, tmp_path):
@@ -159,7 +184,7 @@ async def test_claude_ask_returns_normalized(fake_claude):
     data = structured(result)
     assert data["ok"] is True
     assert data["verdict"] == "concerns"
-    assert data["meta"]["fingerprint"] == "cc-plugin-codex/0.1/schema-6"
+    assert data["meta"]["fingerprint"] == "cc-plugin-codex/0.1/schema-7"
 
 
 async def test_invalid_enum_param_rejected_by_schema(fake_claude):
@@ -200,7 +225,7 @@ async def test_bare_without_api_key_errors(fake_claude, monkeypatch):
         result = await client.call_tool(
             "claude_ask", {"prompt": "x", "config_mode": "bare"}, raise_on_error=False)
     data = structured(result)
-    assert data["error"]["code"] == "api_key_required"
+    assert data["error"]["code"] == "api_key_missing"
 
 
 async def test_success_response_carries_request_id(fake_claude):
@@ -339,6 +364,20 @@ async def test_paid_tools_declare_cost_safety_hints():
         assert ann.idempotentHint is False, name
 
 
+async def test_job_tools_declare_state_hints():
+    tools = await _tools_by_name()
+    assert tools["claude_review_changes_async"].annotations.readOnlyHint is False
+    assert tools["claude_review_changes_async"].annotations.idempotentHint is False
+    assert tools["claude_job_status"].annotations.readOnlyHint is True
+    assert tools["claude_job_status"].annotations.idempotentHint is True
+    assert tools["claude_job_result"].annotations.readOnlyHint is True
+    assert tools["claude_job_result"].annotations.idempotentHint is True
+    assert tools["claude_job_consume_result"].annotations.readOnlyHint is False
+    assert tools["claude_job_consume_result"].annotations.idempotentHint is False
+    assert tools["claude_job_cancel"].annotations.readOnlyHint is False
+    assert tools["claude_job_cancel"].annotations.idempotentHint is False
+
+
 async def test_review_uses_workspace_root_over_cwd(fake_claude, monkeypatch, git_repo, tmp_path):
     # F1: with cwd pointed at an unrelated (non-repo) dir, an explicit
     # workspace_root makes the review target the intended repo.
@@ -367,6 +406,22 @@ async def test_review_invalid_workspace_root_is_structured_error(fake_claude):
     assert data["error"]["offending_param"] == "workspace_root"
 
 
+async def test_review_workspace_outside_roots_is_structured_error(fake_claude, tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    async with Client(mcp, roots=[root.as_uri()]) as client:
+        result = await client.call_tool(
+            "claude_review_changes",
+            {"scope": "working_tree", "workspace_root": str(outside)},
+            raise_on_error=False)
+    data = structured(result)
+    assert data["ok"] is False
+    assert data["error"]["code"] == "workspace_outside_roots"
+    assert data["error"]["offending_param"] == "workspace_root"
+
+
 async def test_review_changes_async_lifecycle(monkeypatch, git_repo, tmp_path):
     # End-to-end through the MCP surface: launch async -> poll status -> get the
     # same envelope as the sync tool. build_command is replaced with a fake that
@@ -390,6 +445,8 @@ async def test_review_changes_async_lifecycle(monkeypatch, git_repo, tmp_path):
             {"scope": "working_tree", "workspace_root": str(git_repo)}))
         assert started["ok"] is True
         assert started["status"] == "running"
+        assert started["poll_after_ms"] == 1000
+        assert started["ttl_seconds"] > 0
         job_id = started["job_id"]
 
         import time as _time
@@ -400,6 +457,8 @@ async def test_review_changes_async_lifecycle(monkeypatch, git_repo, tmp_path):
                 "claude_job_status",
                 {"job_id": job_id, "workspace_root": str(git_repo)}))
             status = st["status"]
+            assert st["poll_after_ms"] == 1000
+            assert st["ttl_seconds"] > 0
             if status != "running":
                 break
             await anyio.sleep(0.05)
@@ -423,22 +482,64 @@ async def test_job_result_not_found_is_structured_error(tmp_path, monkeypatch, g
     assert data["error"]["code"] == "job_not_found"
 
 
+async def test_job_consume_result_deletes_finished_record(monkeypatch, git_repo, tmp_path):
+    import json as _json
+    import time as _time
+
+    import cc_plugin_codex.server as srv
+
+    monkeypatch.setenv("CC_PLUGIN_CODEX_STATE_DIR", str(tmp_path / "state"))
+    inner = {"summary": "ok", "verdict": "pass", "confidence": "high",
+             "findings": [], "questions": [], "assumptions": []}
+    envelope = _json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                            "result": _json.dumps(inner)})
+    monkeypatch.setattr(srv, "build_command",
+                        lambda *a, **k: ["sh", "-c", "printf '%s' \"$0\"", envelope])
+
+    async with Client(mcp) as client:
+        started = structured(await client.call_tool(
+            "claude_review_changes_async",
+            {"scope": "working_tree", "workspace_root": str(git_repo)}))
+        job_id = started["job_id"]
+        deadline = _time.time() + 5
+        while _time.time() < deadline:
+            st = structured(await client.call_tool(
+                "claude_job_status",
+                {"job_id": job_id, "workspace_root": str(git_repo)}))
+            if st["status"] == "done":
+                break
+            await anyio.sleep(0.05)
+        res = structured(await client.call_tool(
+            "claude_job_consume_result",
+            {"job_id": job_id, "workspace_root": str(git_repo)}))
+        missing = structured(await client.call_tool(
+            "claude_job_status",
+            {"job_id": job_id, "workspace_root": str(git_repo)},
+            raise_on_error=False))
+
+    assert res["ok"] is True
+    assert res["meta"]["job_id"] == job_id
+    assert missing["error"]["code"] == "job_not_found"
+
+
 async def test_capabilities_tool_returns_structured_contract():
     # F7: the capability/version contract is available as structured data, not
     # only as a prose resource.
     async with Client(mcp) as client:
         result = await client.call_tool("cc_codex_capabilities", {})
     data = structured(result)
-    assert data["fingerprint"] == "cc-plugin-codex/0.1/schema-6"
+    assert data["fingerprint"] == "cc-plugin-codex/0.1/schema-7"
     assert data["transport"] == "stdio"
     assert set(data["paid_tools"]) == {
         "claude_ask", "claude_review_changes", "claude_adversarial_review",
         "claude_review_changes_async"}
     assert "claude_status" in data["free_tools"]
-    for lifecycle in ("claude_job_status", "claude_job_result", "claude_job_cancel"):
+    for lifecycle in ("claude_job_status", "claude_job_result",
+                      "claude_job_consume_result", "claude_job_cancel"):
         assert lifecycle in data["free_tools"]
     assert data["negative_scope"]            # non-empty list of what it won't do
     assert data["prerequisites"]
+    assert "fingerprint" in data["deprecation_policy"]
 
 
 async def test_paid_failure_reports_cost_on_error_meta(monkeypatch):

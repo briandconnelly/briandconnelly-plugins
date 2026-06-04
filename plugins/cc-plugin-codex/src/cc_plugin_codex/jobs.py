@@ -52,6 +52,14 @@ def max_seconds() -> int:
     return _int_env(MAX_SECONDS_ENV, DEFAULT_MAX_SECONDS)
 
 
+def ttl_seconds() -> int:
+    return _int_env(TTL_ENV, DEFAULT_TTL)
+
+
+def poll_after_ms() -> int:
+    return 1000
+
+
 def _state_root() -> Path:
     root = os.environ.get(STATE_ENV)
     if root:
@@ -239,12 +247,19 @@ def _deadline_seconds(meta: dict) -> int:
     return max_seconds()
 
 
+def _expires_at(meta: dict) -> Optional[str]:
+    completed = meta.get("completed_epoch")
+    if completed is None:
+        return None
+    return datetime.fromtimestamp(completed + ttl_seconds(), timezone.utc).isoformat()
+
+
 def _reap_workspace(cwd: str) -> None:
     """Lazy maintenance: refresh statuses and delete expired terminal records."""
     ws = _ws_dir(cwd)
     if not ws.is_dir():
         return
-    ttl = _int_env(TTL_ENV, DEFAULT_TTL)
+    ttl = ttl_seconds()
     now = time.time()
     for jd in ws.iterdir():
         if not jd.is_dir():
@@ -321,6 +336,9 @@ def status(cwd: str, job_id: str) -> Optional[dict]:
         "status": state, "started_at": meta.get("started_at", ""),
         "elapsed_ms": _elapsed_ms(meta),
         "deadline_seconds": _deadline_seconds(meta),
+        "poll_after_ms": poll_after_ms(),
+        "ttl_seconds": ttl_seconds(),
+        "expires_at": _expires_at(meta),
         "result_available": state == "done",
         "cost_usd": cost, "detail": detail,
         "fingerprint": FINGERPRINT,

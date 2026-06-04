@@ -70,6 +70,9 @@ def test_job_done_returns_normalized_result(tmp_path):
     # reports the deadline window the job started with (1800s), not a live env read.
     assert st["fingerprint"]
     assert st["deadline_seconds"] == 1800
+    assert st["poll_after_ms"] == 1000
+    assert st["ttl_seconds"] == 86400
+    assert st["expires_at"]
 
     payload, found = jobs.result(cwd, job_id)
     assert found is True
@@ -132,6 +135,15 @@ def test_terminal_job_reaped_after_ttl(tmp_path, monkeypatch):
     monkeypatch.setenv("CC_PLUGIN_CODEX_JOB_TTL", "0")
     time.sleep(0.02)
     assert jobs.status(cwd, job_id) is None  # reaped
+
+
+def test_result_preserves_record_by_default(tmp_path):
+    cwd = str(tmp_path)
+    job_id, _ = jobs.start_job(_emit_cmd(), cwd, _cfg())
+    _await_done(cwd, job_id)
+    payload, found = jobs.result(cwd, job_id)
+    assert found is True and payload["ok"] is True
+    assert jobs.status(cwd, job_id)["status"] == "done"
 
 
 def test_consume_deletes_record(tmp_path):

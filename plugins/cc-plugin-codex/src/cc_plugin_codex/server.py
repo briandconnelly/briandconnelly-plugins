@@ -55,6 +55,13 @@ CAPABILITY_SUMMARY = (
     "synchronously for up to timeout_seconds (default 180s, max 600s), but CAN be "
     "cancelled by the client (which terminates the underlying Claude process) and "
     "cannot be resumed; narrow the scope or lower timeout_seconds to bound a call. "
+    "When client MCP roots are available, an explicit workspace_root must be inside "
+    "one of those roots; clients without roots may still pass an existing absolute path. "
+    "Background result fetch is read-only; use claude_job_consume_result to fetch and "
+    "delete a stored completed result. "
+    "Deprecated capabilities remain discoverable during their compatibility window "
+    "with replacement guidance, and every agent-visible contract change bumps the "
+    "fingerprint. "
     "Prerequisite: the `claude` CLI installed and authenticated; config_mode=bare "
     "additionally requires ANTHROPIC_API_KEY. "
     "Note: in claude 2.1.x there is no OAuth-preserving way to fully strip "
@@ -72,10 +79,15 @@ _PAID_ANNOTATIONS = {
     "readOnlyHint": True, "openWorldHint": True,
     "destructiveHint": False, "idempotentHint": False,
 }
-# claude_status is free, read-only, and safely repeatable.
-_STATUS_ANNOTATIONS = {
+# Free read-only tools are safely repeatable.
+_FREE_READ_ANNOTATIONS = {
     "readOnlyHint": True, "openWorldHint": False,
     "destructiveHint": False, "idempotentHint": True,
+}
+# Local job lifecycle mutations change only this server's job state.
+_LOCAL_MUTATION_ANNOTATIONS = {
+    "readOnlyHint": False, "openWorldHint": False,
+    "destructiveHint": False, "idempotentHint": False,
 }
 
 
@@ -108,22 +120,56 @@ def _err(code: str, message: str, repair: str, meta: Meta,
     ).model_dump(mode="json", exclude_none=True)
 
 
-async def _first_root(ctx) -> str | None:
-    """Return the filesystem path of the client's first file:// root, or None.
+def _workspace_error(code: str, workspace_root: str | None = None) -> dict:
+    meta = _meta("", "inherit", "toolless", 0, 0, None)
+    if code == "workspace_outside_roots":
+        return _err(
+            code,
+            f"workspace_root '{workspace_root}' is outside the client's MCP roots.",
+            "Pass a workspace_root contained by an MCP root, omit workspace_root to "
+            "use the first root, or configure the intended directory as a root.",
+            meta,
+            offending="workspace_root",
+        )
+    return _err(
+        code,
+        f"workspace_root '{workspace_root}' is not an existing absolute directory.",
+        "Pass workspace_root as an absolute path to an existing directory, or "
+        "configure an MCP root.",
+        meta,
+        offending="workspace_root",
+    )
 
-    Returns None if the client provides no roots or does not support the roots
+
+async def _file_roots(ctx) -> list[str]:
+    """Return filesystem paths from the client's file:// roots.
+
+    Returns [] if the client provides no roots or does not support the roots
     capability (list_roots raises)."""
     if ctx is None:
-        return None
+        return []
     try:
         roots = await ctx.list_roots()
     except Exception:
-        return None
+        return []
+    paths = []
     for root in roots or []:
         uri = str(getattr(root, "uri", ""))
         if uri.startswith("file://"):
-            return unquote(urlparse(uri).path)
-    return None
+            paths.append(unquote(urlparse(uri).path))
+    return paths
+
+
+async def _first_root(ctx) -> str | None:
+    roots = await _file_roots(ctx)
+    return roots[0] if roots else None
+
+
+def _contained_by(path: str, root: str) -> bool:
+    try:
+        return os.path.commonpath([os.path.realpath(path), os.path.realpath(root)]) == os.path.realpath(root)
+    except ValueError:
+        return False
 
 
 async def _resolve_workspace(workspace_root, ctx):
@@ -132,10 +178,11 @@ async def _resolve_workspace(workspace_root, ctx):
     Order: explicit workspace_root arg -> first file:// MCP root -> os.getcwd().
     Returns (path, error_code, source). error_code is None on success; on failure
     path is None and source is None."""
+    roots = await _file_roots(ctx)
     if workspace_root:
         path, source = workspace_root, "param"
     else:
-        root = await _first_root(ctx)
+        root = roots[0] if roots else None
         if root:
             path, source = root, "roots"
         else:
@@ -145,6 +192,8 @@ async def _resolve_workspace(workspace_root, ctx):
     # and os.getcwd() are always absolute already.
     if not os.path.isabs(path) or not os.path.isdir(path):
         return None, "invalid_workspace_root", None
+    if workspace_root and roots and not any(_contained_by(path, root) for root in roots):
+        return None, "workspace_outside_roots", None
     return path, None, source
 
 
@@ -188,7 +237,7 @@ def _resolve(config_mode, access, model, max_budget_usd, timeout_seconds, detail
     meta = _meta(cwd, cm, ac, timeout, 0, None, scope, base,
                  workspace_source=workspace_source)
     if cm == "bare" and not bare_available():
-        return None, _err("api_key_required",
+        return None, _err("api_key_missing",
                           "config_mode=bare requires ANTHROPIC_API_KEY, which is unset.",
                           "Set ANTHROPIC_API_KEY, or use config_mode inherit/scoped.",
                           meta, offending="config_mode")
@@ -249,21 +298,19 @@ async def claude_ask(
     other failures return ok:false. Errors come back as
     {"ok": false, "error": {code, message, repair}} with is_error set — branch on
     `ok`. Possible error codes: unsupported_config_mode, unsupported_access,
-    api_key_required, invalid_workspace_root, claude_not_found, claude_auth_required,
+    api_key_missing, api_key_invalid, invalid_workspace_root, workspace_outside_roots,
+    claude_not_found, claude_auth_required,
     claude_permission_error, timeout, budget_exceeded, nonzero_exit, invalid_json,
     internal_error.
 
     workspace_root: absolute path to the repo to operate in; if omitted, the
     server uses the client's first MCP root, else its own cwd (see meta.workspace_source).
-    Adds error code: invalid_workspace_root (path missing or not absolute).
+    Adds error codes: invalid_workspace_root (path missing or not absolute),
+    workspace_outside_roots (explicit path outside negotiated roots).
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
-        meta = _meta("", "inherit", "toolless", 0, 0, None)
-        return _result(_err(ws_err,
-                       f"workspace_root '{workspace_root}' is not an existing absolute directory.",
-                       "Pass workspace_root as an absolute path to an existing directory, or "
-                       "configure an MCP root.", meta, offending="workspace_root"))
+        return _result(_workspace_error(ws_err, workspace_root))
     r, err = _resolve(config_mode, access, model, max_budget_usd, timeout_seconds,
                       detail, cwd, workspace_source=ws_source, effort=effort)
     if err:
@@ -304,22 +351,20 @@ async def claude_review_changes(
     framework as a schema validation error BEFORE the tool runs and do NOT use the
     ok:false envelope; all other failures return ok:false. Branch on `ok` (is_error
     is set on failure); error codes: unsupported_config_mode, unsupported_access,
-    api_key_required, invalid_workspace_root, invalid_scope, invalid_base,
+    api_key_missing, api_key_invalid, invalid_workspace_root, workspace_outside_roots,
+    invalid_scope, invalid_base,
     context_too_large, claude_not_found, claude_auth_required,
     claude_permission_error, timeout, budget_exceeded, nonzero_exit, invalid_json,
     internal_error.
 
     workspace_root: absolute path to the repo to operate in; if omitted, the
     server uses the client's first MCP root, else its own cwd (see meta.workspace_source).
-    Adds error code: invalid_workspace_root (path missing or not absolute).
+    Adds error codes: invalid_workspace_root (path missing or not absolute),
+    workspace_outside_roots (explicit path outside negotiated roots).
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
-        meta = _meta("", "inherit", "toolless", 0, 0, None)
-        return _result(_err(ws_err,
-                       f"workspace_root '{workspace_root}' is not an existing absolute directory.",
-                       "Pass workspace_root as an absolute path to an existing directory, or "
-                       "configure an MCP root.", meta, offending="workspace_root"))
+        return _result(_workspace_error(ws_err, workspace_root))
     # Validate options BEFORE touching git, so bad config isn't masked by git errors.
     r, err = _resolve(config_mode, access, model, max_budget_usd, timeout_seconds,
                       detail, cwd, scope=scope, base=base, workspace_source=ws_source,
@@ -383,20 +428,18 @@ async def claude_adversarial_review(
     enum params (config_mode, access, scope, detail) are rejected by the framework
     as a schema validation error BEFORE the tool runs and do NOT use the ok:false
     envelope; all other failures return ok:false. Branch on `ok` (is_error is set
-    on failure). Always possible: invalid_workspace_root. Attaching a scope adds
-    invalid_scope, invalid_base, and context_too_large to the possible error codes.
+    on failure). Always possible: invalid_workspace_root and workspace_outside_roots.
+    Attaching a scope adds invalid_scope, invalid_base, and context_too_large to
+    the possible error codes.
 
     workspace_root: absolute path to the repo to operate in; if omitted, the
     server uses the client's first MCP root, else its own cwd (see meta.workspace_source).
-    Adds error code: invalid_workspace_root (path missing or not absolute).
+    Adds error codes: invalid_workspace_root (path missing or not absolute),
+    workspace_outside_roots (explicit path outside negotiated roots).
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
-        meta = _meta("", "inherit", "toolless", 0, 0, None)
-        return _result(_err(ws_err,
-                       f"workspace_root '{workspace_root}' is not an existing absolute directory.",
-                       "Pass workspace_root as an absolute path to an existing directory, or "
-                       "configure an MCP root.", meta, offending="workspace_root"))
+        return _result(_workspace_error(ws_err, workspace_root))
     r, err = _resolve(config_mode, access, model, max_budget_usd, timeout_seconds,
                       detail, cwd, scope=scope, base=base, workspace_source=ws_source,
                       effort=effort)
@@ -439,7 +482,7 @@ async def claude_adversarial_review(
 # Starting a background job commits to spend (the job runs to completion or its
 # budget cap even if never polled), but returns immediately without blocking.
 _ASYNC_START_ANNOTATIONS = {
-    "readOnlyHint": True, "openWorldHint": True,
+    "readOnlyHint": False, "openWorldHint": True,
     "destructiveHint": False, "idempotentHint": False,
 }
 
@@ -468,7 +511,7 @@ async def claude_review_changes_async(
     {ok, job_id, status:"running", ...} right away; the review keeps running
     detached. Poll claude_job_status(job_id), then claude_job_result(job_id) once
     status=done. Use this for large diffs or when you want to keep working while
-    Claude reviews. Paid (commits to spend) + read-only. The diff is gathered now,
+    Claude reviews. Paid (commits to spend) + creates local job state. The diff is gathered now,
     with the same secret redaction and budget cap as the synchronous tool.
 
     The job is bounded by max_budget_usd and a wall-clock deadline
@@ -479,11 +522,7 @@ async def claude_review_changes_async(
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
-        meta = _meta("", "inherit", "toolless", 0, 0, None)
-        return _result(_err(ws_err,
-                       f"workspace_root '{workspace_root}' is not an existing absolute directory.",
-                       "Pass workspace_root as an absolute path to an existing directory, or "
-                       "configure an MCP root.", meta, offending="workspace_root"))
+        return _result(_workspace_error(ws_err, workspace_root))
     r, err = _resolve(config_mode, access, model, max_budget_usd, None,
                       detail, cwd, scope=scope, base=base, workspace_source=ws_source,
                       effort=effort)
@@ -524,13 +563,15 @@ async def claude_review_changes_async(
     started = JobStarted(
         job_id=job_id, kind="claude_review_changes", started_at=started_at,
         deadline_seconds=job_timeout,
+        poll_after_ms=jobs.poll_after_ms(),
+        ttl_seconds=jobs.ttl_seconds(),
         meta=_meta(cwd, r.config_mode, r.access, job_timeout, 0, None, scope, base,
                    workspace_source=ws_source),
     )
     return _result(started.model_dump(mode="json", exclude_none=True))
 
 
-@mcp.tool(annotations=_STATUS_ANNOTATIONS, title="Background job status",
+@mcp.tool(annotations=_FREE_READ_ANNOTATIONS, title="Background job status",
           output_schema=JOB_STATUS_SCHEMA)
 async def claude_job_status(
     job_id: Annotated[str, Field(description="A job_id from an *_async tool.")],
@@ -548,10 +589,7 @@ async def claude_job_status(
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
-        meta = _meta("", "inherit", "toolless", 0, 0, None)
-        return _result(_err(ws_err, "workspace_root is not an existing absolute directory.",
-                       "Pass an absolute path or configure an MCP root.", meta,
-                       offending="workspace_root"))
+        return _result(_workspace_error(ws_err, workspace_root))
     data = await anyio.to_thread.run_sync(lambda: jobs.status(cwd, job_id))
     if data is None:
         meta = _meta(cwd, "inherit", "toolless", 0, 0, None, workspace_source=ws_source)
@@ -561,12 +599,10 @@ async def claude_job_status(
     return _result(data)
 
 
-@mcp.tool(annotations=_STATUS_ANNOTATIONS, title="Background job result",
+@mcp.tool(annotations=_FREE_READ_ANNOTATIONS, title="Background job result",
           output_schema=RESULT_SCHEMA)
 async def claude_job_result(
     job_id: Annotated[str, Field(description="A job_id from an *_async tool.")],
-    consume: Annotated[bool, Field(
-        description="Delete the job record after returning the result.")] = False,
     workspace_root: Annotated[Optional[str], Field(
         description="Workspace the job belongs to (defaults like the async tools).")] = None,
     ctx: Context = None,
@@ -577,17 +613,14 @@ async def claude_job_result(
     confidence, findings, meta.cost_usd, ...), with meta.job_id set — reuse your
     existing result parser. If the job is not yet done it returns an ok:false
     error: job_running (poll and retry), job_cancelled, job_timeout, or job_failed;
-    job_not_found if the id is unknown. Pass consume=true to delete the record once
-    you have the result.
+    job_not_found if the id is unknown. Call claude_job_consume_result to fetch
+    and delete a completed record.
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
-        meta = _meta("", "inherit", "toolless", 0, 0, None)
-        return _result(_err(ws_err, "workspace_root is not an existing absolute directory.",
-                       "Pass an absolute path or configure an MCP root.", meta,
-                       offending="workspace_root"))
+        return _result(_workspace_error(ws_err, workspace_root))
     payload, found = await anyio.to_thread.run_sync(
-        lambda: jobs.result(cwd, job_id, consume))
+        lambda: jobs.result(cwd, job_id, False))
     if not found:
         meta = _meta(cwd, "inherit", "toolless", 0, 0, None, workspace_source=ws_source)
         return _result(_err("job_not_found", f"No job '{job_id}' in this workspace.",
@@ -596,7 +629,35 @@ async def claude_job_result(
     return _result(payload)
 
 
-@mcp.tool(annotations=_STATUS_ANNOTATIONS, title="Cancel background job",
+@mcp.tool(annotations=_LOCAL_MUTATION_ANNOTATIONS, title="Consume background job result",
+          output_schema=RESULT_SCHEMA)
+async def claude_job_consume_result(
+    job_id: Annotated[str, Field(description="A job_id from an *_async tool.")],
+    workspace_root: Annotated[Optional[str], Field(
+        description="Workspace the job belongs to (defaults like the async tools).")] = None,
+    ctx: Context = None,
+) -> ToolResult:
+    """Fetch a finished background job's review and delete the job record.
+
+    Returns the same envelope as claude_job_result, with meta.job_id set, then
+    removes the stored job record once the finished result has been returned.
+    This tool changes local job state and is not idempotent. Non-done jobs return
+    the same ok:false lifecycle errors as claude_job_result and are not deleted.
+    """
+    cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
+    if ws_err:
+        return _result(_workspace_error(ws_err, workspace_root))
+    payload, found = await anyio.to_thread.run_sync(
+        lambda: jobs.result(cwd, job_id, True))
+    if not found:
+        meta = _meta(cwd, "inherit", "toolless", 0, 0, None, workspace_source=ws_source)
+        return _result(_err("job_not_found", f"No job '{job_id}' in this workspace.",
+                       "Check the job_id, or start a new job; records expire after the TTL.",
+                       meta, offending="job_id"))
+    return _result(payload)
+
+
+@mcp.tool(annotations=_LOCAL_MUTATION_ANNOTATIONS, title="Cancel background job",
           output_schema=JOB_STATUS_SCHEMA)
 async def claude_job_cancel(
     job_id: Annotated[str, Field(description="A job_id from an *_async tool.")],
@@ -612,10 +673,7 @@ async def claude_job_cancel(
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
-        meta = _meta("", "inherit", "toolless", 0, 0, None)
-        return _result(_err(ws_err, "workspace_root is not an existing absolute directory.",
-                       "Pass an absolute path or configure an MCP root.", meta,
-                       offending="workspace_root"))
+        return _result(_workspace_error(ws_err, workspace_root))
     data = await anyio.to_thread.run_sync(lambda: jobs.cancel(cwd, job_id))
     if data is None:
         meta = _meta(cwd, "inherit", "toolless", 0, 0, None, workspace_source=ws_source)
@@ -625,7 +683,7 @@ async def claude_job_cancel(
     return _result(data)
 
 
-@mcp.tool(annotations=_STATUS_ANNOTATIONS, title="Claude CLI status & defaults",
+@mcp.tool(annotations=_FREE_READ_ANNOTATIONS, title="Claude CLI status & defaults",
           output_schema=STATUS_SCHEMA)
 def claude_status() -> ToolResult:
     """Report whether `claude` is installed/usable, which config modes are available,
@@ -679,7 +737,7 @@ def claude_status() -> ToolResult:
     return _result(status.model_dump(mode="json", exclude_none=True))
 
 
-@mcp.tool(annotations=_STATUS_ANNOTATIONS, title="cc-plugin-codex capabilities",
+@mcp.tool(annotations=_FREE_READ_ANNOTATIONS, title="cc-plugin-codex capabilities",
           output_schema=CAPABILITIES_SCHEMA)
 def cc_codex_capabilities() -> ToolResult:
     """Return this server's contract as structured data: tool inventory, modes,
@@ -697,7 +755,8 @@ def cc_codex_capabilities() -> ToolResult:
         paid_tools=["claude_ask", "claude_review_changes", "claude_adversarial_review",
                     "claude_review_changes_async"],
         free_tools=["claude_status", "cc_codex_capabilities", "claude_job_status",
-                    "claude_job_result", "claude_job_cancel"],
+                    "claude_job_result", "claude_job_consume_result",
+                    "claude_job_cancel"],
         config_modes=["inherit", "scoped", "bare"],
         access_modes=["toolless", "readonly"],
         scope=[
@@ -717,6 +776,11 @@ def cc_codex_capabilities() -> ToolResult:
             "git, for the diff-bearing tools",
             "ANTHROPIC_API_KEY only for config_mode=bare",
         ],
+        deprecation_policy=(
+            "Deprecated tools remain discoverable during their compatibility window "
+            "with replacement guidance; removals/renames and schema/error changes "
+            "bump the fingerprint."
+        ),
     )
     return _result(result.model_dump(mode="json", exclude_none=True))
 
