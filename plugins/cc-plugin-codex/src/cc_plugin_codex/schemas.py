@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 # Bump this whenever the agent-visible surface changes: tool names, input or
 # output schemas, the ErrorCode set, the config_mode/access/scope/detail value
 # sets, or the capability guarantees in CAPABILITY_SUMMARY. Clients cache by it.
-FINGERPRINT = "cc-plugin-codex/0.1/schema-10"
+FINGERPRINT = "cc-plugin-codex/0.1/schema-11"
 
 Severity = Literal["critical", "high", "medium", "low", "nit"]
 Verdict = Literal["pass", "concerns", "fail", "unknown"]
@@ -45,6 +45,9 @@ ErrorCode = Literal[
     "invalid_workspace_root", "workspace_outside_roots",
     "context_too_large", "timeout", "budget_exceeded", "claude_permission_error",
     "nonzero_exit", "invalid_json", "internal_error",
+    # The installed `claude` rejected a flag/value this plugin sends — its CLI
+    # contract drifted and the plugin likely needs an update.
+    "cli_contract_changed",
     # Background-job lifecycle errors (claude_job_result for a non-done job):
     "job_not_found", "job_running", "job_cancelled", "job_timeout", "job_failed",
 ]
@@ -103,6 +106,10 @@ class Meta(BaseModel):
     truncation_hint: Optional[str] = None
     command_exit_code: Optional[int] = None
     permission_denials: Optional[list] = None
+    # Optional `claude` flags this server dropped because the installed CLI did not
+    # advertise them in --help (e.g. ["--effort"]). Empty in the common case;
+    # informational — guarantee-bearing flags are never dropped, only depth/cosmetic ones.
+    compat_warnings: list[str] = Field(default_factory=list)
     redacted_paths: list[str] = Field(default_factory=list)
     cost_usd: Optional[float] = None
     usage: Optional[Usage] = None
@@ -163,8 +170,14 @@ class StatusResult(BaseModel):
     # Readiness probes (all free — no paid Claude call):
     claude_authenticated: Optional[bool] = None   # None = could not determine
     auth_detail: Optional[str] = None
-    version_supported: Optional[bool] = None       # matches the supported CLI major
-    ready: bool = False        # found AND a supported version AND authenticated
+    version_supported: Optional[bool] = None       # major is in supported_majors()
+    # Set when version_supported is False: a major outside the tested range is
+    # advisory, not fatal — tools may still work, so we warn instead of blocking.
+    version_warning: Optional[str] = None
+    # Set when `claude --help` did not list a guarantee-bearing flag this plugin
+    # sends — an early, free signal that the CLI contract drifted.
+    flags_warning: Optional[str] = None
+    ready: bool = False        # found AND authenticated (version is advisory, not gating)
     config_modes_available: dict
     resolved_defaults: ResolvedDefaults
     caveat: str

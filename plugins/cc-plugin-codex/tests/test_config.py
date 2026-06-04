@@ -93,3 +93,16 @@ def test_version_supported():
     assert cfg.version_supported("3.0.0") is False
     assert cfg.version_supported("garbage") is None
     assert cfg.version_supported(None) is None
+
+
+def test_supported_majors_env_override(monkeypatch):
+    # A user can opt into an untested major without a code change.
+    monkeypatch.setenv("CC_PLUGIN_CODEX_SUPPORTED_MAJORS", "2,3")
+    assert cfg.supported_majors() == frozenset({2, 3})
+    assert cfg.version_supported("3.0.0") is True
+    assert cfg.version_supported("4.1.0") is False
+
+
+def test_supported_majors_env_garbage_falls_back(monkeypatch):
+    monkeypatch.setenv("CC_PLUGIN_CODEX_SUPPORTED_MAJORS", "not,ints")
+    assert cfg.supported_majors() == cfg.cli_contract.SUPPORTED_MAJORS

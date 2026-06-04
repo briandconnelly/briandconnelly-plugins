@@ -4,11 +4,22 @@ import anyio
 import pytest
 from fastmcp import Client
 
+from cc_plugin_codex.cli_contract import ALWAYS_SEND_FLAGS, HELP_GATED_FLAGS
+from cc_plugin_codex.preflight import FlagSupport
 from cc_plugin_codex.server import CAPABILITY_SUMMARY, mcp
 from cc_plugin_codex.server import _first_root, _resolve_workspace
 from tests.conftest import structured
 
 PAID_TOOLS = ("claude_ask", "claude_review_changes", "claude_adversarial_review")
+
+
+def _patch_full_flag_support(monkeypatch):
+    """Make claude_status' --help probe deterministic: every expected flag present,
+    so flags_warning stays None and no real `claude --help` runs."""
+    import cc_plugin_codex.server as srv
+    fs = FlagSupport(
+        supported=frozenset(ALWAYS_SEND_FLAGS) | set(HELP_GATED_FLAGS), help_parsed=True)
+    monkeypatch.setattr(srv.preflight, "flag_support", lambda *a, **k: fs)
 
 
 class _FakeRoots:
@@ -199,7 +210,7 @@ async def test_claude_ask_returns_normalized(fake_claude):
     data = structured(result)
     assert data["ok"] is True
     assert data["verdict"] == "concerns"
-    assert data["meta"]["fingerprint"] == "cc-plugin-codex/0.1/schema-10"
+    assert data["meta"]["fingerprint"] == "cc-plugin-codex/0.1/schema-11"
 
 
 async def test_claude_ask_rejects_oversized_prompt_before_paid_call(monkeypatch, tmp_path):
@@ -316,12 +327,36 @@ async def test_status_reports_readiness(monkeypatch):
 
     monkeypatch.setattr(srv.subprocess, "run", lambda *a, **k: _Ver())
     monkeypatch.setattr(srv, "auth_status", lambda *a, **k: (True, "Logged in"))
+    _patch_full_flag_support(monkeypatch)
     async with Client(mcp) as client:
         result = await client.call_tool("claude_status", {})
     data = structured(result)
     assert data["claude_authenticated"] is True
     assert data["version_supported"] is True
     assert data["ready"] is True
+    assert "version_warning" not in data    # supported version -> no warning
+    assert "flags_warning" not in data      # probe lists every expected flag
+
+
+async def test_status_ready_despite_untested_major(monkeypatch):
+    # A claude major outside the tested range is advisory: ready stays True (so an
+    # agent does not self-block) but version_warning explains the mismatch.
+    import cc_plugin_codex.server as srv
+
+    monkeypatch.setattr(srv.shutil, "which", lambda _: "/usr/bin/claude")
+
+    class _Ver:
+        stdout = "3.0.0 (Claude Code)"
+
+    monkeypatch.setattr(srv.subprocess, "run", lambda *a, **k: _Ver())
+    monkeypatch.setattr(srv, "auth_status", lambda *a, **k: (True, "Logged in"))
+    _patch_full_flag_support(monkeypatch)
+    async with Client(mcp) as client:
+        result = await client.call_tool("claude_status", {})
+    data = structured(result)
+    assert data["version_supported"] is False
+    assert data["ready"] is True            # version no longer gates readiness
+    assert "version_warning" in data and "3.0.0" in data["version_warning"]
 
 
 async def test_status_not_ready_when_logged_out(monkeypatch):
@@ -334,6 +369,7 @@ async def test_status_not_ready_when_logged_out(monkeypatch):
 
     monkeypatch.setattr(srv.subprocess, "run", lambda *a, **k: _Ver())
     monkeypatch.setattr(srv, "auth_status", lambda *a, **k: (False, "Not logged in"))
+    _patch_full_flag_support(monkeypatch)
     async with Client(mcp) as client:
         result = await client.call_tool("claude_status", {})
     data = structured(result)
@@ -551,7 +587,7 @@ async def test_review_changes_async_lifecycle(monkeypatch, git_repo, tmp_path):
                             "result": _json.dumps(inner), "total_cost_usd": 0.02,
                             "usage": {"input_tokens": 5, "output_tokens": 1}})
     monkeypatch.setattr(srv, "build_command",
-                        lambda *a, **k: ["sh", "-c", "printf '%s' \"$0\"", envelope])
+                        lambda *a, **k: (["sh", "-c", "printf '%s' \"$0\"", envelope], []))
 
     async with Client(mcp) as client:
         started = structured(await client.call_tool(
@@ -608,7 +644,7 @@ async def test_job_consume_result_deletes_finished_record(monkeypatch, git_repo,
     envelope = _json.dumps({"type": "result", "subtype": "success", "is_error": False,
                             "result": _json.dumps(inner)})
     monkeypatch.setattr(srv, "build_command",
-                        lambda *a, **k: ["sh", "-c", "printf '%s' \"$0\"", envelope])
+                        lambda *a, **k: (["sh", "-c", "printf '%s' \"$0\"", envelope], []))
 
     async with Client(mcp) as client:
         started = structured(await client.call_tool(
@@ -642,7 +678,7 @@ async def test_capabilities_tool_returns_structured_contract():
     async with Client(mcp) as client:
         result = await client.call_tool("cc_codex_capabilities", {})
     data = structured(result)
-    assert data["fingerprint"] == "cc-plugin-codex/0.1/schema-10"
+    assert data["fingerprint"] == "cc-plugin-codex/0.1/schema-11"
     assert data["transport"] == "stdio"
     assert set(data["paid_tools"]) == {
         "claude_ask", "claude_review_changes", "claude_adversarial_review",
@@ -749,7 +785,7 @@ async def test_async_result_reports_redacted_paths(monkeypatch, git_repo, tmp_pa
     envelope = _json.dumps({"type": "result", "subtype": "success", "is_error": False,
                             "result": _json.dumps(inner)})
     monkeypatch.setattr(srv, "build_command",
-                        lambda *a, **k: ["sh", "-c", "printf '%s' \"$0\"", envelope])
+                        lambda *a, **k: (["sh", "-c", "printf '%s' \"$0\"", envelope], []))
 
     async with Client(mcp) as client:
         started = structured(await client.call_tool(
@@ -837,7 +873,7 @@ async def test_job_list_recovers_job_ids(monkeypatch, git_repo, tmp_path):
     envelope = _json.dumps({"type": "result", "subtype": "success", "is_error": False,
                             "result": _json.dumps(inner), "total_cost_usd": 0.02})
     monkeypatch.setattr(srv, "build_command",
-                        lambda *a, **k: ["sh", "-c", "printf '%s' \"$0\"", envelope])
+                        lambda *a, **k: (["sh", "-c", "printf '%s' \"$0\"", envelope], []))
 
     async with Client(mcp) as client:
         empty = structured(await client.call_tool(

@@ -11,9 +11,11 @@ from dataclasses import dataclass
 
 import anyio
 
+from cc_plugin_codex import cli_contract, preflight
 from cc_plugin_codex.config import (
     INDEPENDENT_CRITIC_PROMPT, access_flags, config_mode_flags,
 )
+from cc_plugin_codex.preflight import FlagSupport
 from cc_plugin_codex.schemas import ErrorInfo
 
 
@@ -26,22 +28,52 @@ class ClaudeRun:
     timed_out: bool
 
 
+def _gate_optional(tokens: list[str], fs: FlagSupport) -> tuple[list[str], list[str]]:
+    """Drop any HELP_GATED flag (and its value, if it takes one) the installed
+    `claude` does not advertise in --help. Returns (kept_tokens, dropped_flags).
+    ALWAYS_SEND flags are never in HELP_GATED_FLAGS, so they always survive."""
+    kept: list[str] = []
+    dropped: list[str] = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        takes_value = cli_contract.HELP_GATED_FLAGS.get(token)
+        if takes_value is not None and not preflight.is_supported(token, fs):
+            dropped.append(token)
+            i += 2 if takes_value else 1
+            continue
+        kept.append(token)
+        i += 1
+    return kept, dropped
+
+
 def build_command(prompt: str, config_mode: str, access: str, model: str | None,
-                  max_budget_usd: float, effort: str | None = None) -> list[str]:
+                  max_budget_usd: float, effort: str | None = None,
+                  flag_support: FlagSupport | None = None) -> tuple[list[str], list[str]]:
+    """Build the `claude` invocation. Returns (cmd, dropped_optional_flags).
+
+    Guarantee-bearing flags are sent unconditionally; HELP_GATED (depth/cosmetic)
+    flags are dropped when the installed CLI does not list them, so a minor
+    upstream change degrades instead of aborting a paid run. dropped_optional_flags
+    feeds Meta.compat_warnings."""
+    fs = flag_support if flag_support is not None else preflight.flag_support()
     # --no-chrome disables the "Claude in Chrome" integration, which could
     # otherwise open an interactive picker that hangs an unattended run until the
     # timeout (burning the whole timeout and the spend) instead of answering.
-    cmd = ["claude", "-p", "--output-format", "json", "--no-chrome"]
-    cmd += config_mode_flags(config_mode)
-    cmd += access_flags(access)
-    cmd += ["--append-system-prompt", INDEPENDENT_CRITIC_PROMPT]
-    cmd += ["--max-budget-usd", f"{max_budget_usd}"]
-    if effort:
-        cmd += ["--effort", effort]
+    tokens = [cli_contract.CLAUDE_BIN, *cli_contract.CORE_INVOCATION, "--no-chrome"]
+    tokens += config_mode_flags(config_mode)
+    tokens += access_flags(access)
+    tokens += ["--append-system-prompt", INDEPENDENT_CRITIC_PROMPT]
+    tokens += ["--max-budget-usd", f"{max_budget_usd}"]
+    if effort and effort in cli_contract.VALID_EFFORTS:
+        tokens += ["--effort", effort]
     if model:
-        cmd += ["--model", model]
-    cmd += ["--", prompt]  # end-of-options separator, then the prompt as positional
-    return cmd
+        tokens += ["--model", model]
+    cmd, dropped = _gate_optional(tokens, fs)
+    # Gate BEFORE appending the prompt so a prompt that contains "--effort" etc.
+    # can never be mistaken for a flag.
+    cmd += [cli_contract.END_OF_OPTIONS, prompt]
+    return cmd, dropped
 
 
 def auth_status(timeout_seconds: int = 10) -> tuple[bool | None, str | None]:
@@ -54,7 +86,7 @@ def auth_status(timeout_seconds: int = 10) -> tuple[bool | None, str | None]:
     into shared logs/transcripts. The boolean already carries the machine-readable
     truth, so we deliberately drop the raw text."""
     try:
-        proc = subprocess.run(["claude", "auth", "status", "--text"],
+        proc = subprocess.run([cli_contract.CLAUDE_BIN, *cli_contract.AUTH_STATUS_ARGS],
                               capture_output=True, text=True, timeout=timeout_seconds)
     except (OSError, subprocess.SubprocessError):
         return None, None
@@ -181,6 +213,23 @@ def classify_failure(run: ClaudeRun) -> ErrorInfo:
                                  "(a best-effort limit, not a hard cap).",
                          repair="Raise max_budget_usd or reduce context.",
                          retryable=True)
+    # An unknown flag / invalid value means the CLI contract drifted from what this
+    # plugin sends. Check last so an auth/budget message is never misread as drift.
+    if cli_contract.is_contract_drift(run.stderr, run.stdout):
+        return contract_changed_error()
     return ErrorInfo(code="nonzero_exit",
                      message=f"claude exited {run.exit_code}: {run.stderr.strip()[:200]}",
                      repair="Inspect the error; retry with a smaller request.")
+
+
+def contract_changed_error() -> ErrorInfo:
+    """Shared cli_contract_changed error, reused across every failure path so a
+    drift is reported identically whether it surfaces on the sync, envelope, or
+    async-job path."""
+    return ErrorInfo(
+        code="cli_contract_changed",
+        message="claude rejected a flag or value this plugin sent — its CLI "
+                "contract likely changed for your installed version.",
+        repair="Update cc-plugin-codex (or pin claude to a supported version); "
+               "run claude_status to check the version.",
+    )
