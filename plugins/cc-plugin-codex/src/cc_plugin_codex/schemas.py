@@ -20,8 +20,9 @@ Access = Literal["toolless", "readonly"]
 Scope = Literal["working_tree", "staged", "branch"]
 Detail = Literal["summary", "full"]
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
-# Lifecycle states for a background job. Terminal: done|failed|cancelled|timeout|expired.
-JobState = Literal["running", "done", "failed", "cancelled", "timeout", "expired"]
+# Lifecycle states for a background job. Terminal: done|failed|cancelled|timeout.
+# (TTL-expired records are deleted and reported as job_not_found, not a state.)
+JobState = Literal["running", "done", "failed", "cancelled", "timeout"]
 
 ErrorCode = Literal[
     "claude_not_found", "claude_auth_required", "api_key_required",

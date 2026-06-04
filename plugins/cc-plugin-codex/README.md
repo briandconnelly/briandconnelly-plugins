@@ -116,8 +116,9 @@ to that workspace's state directory can read or cancel its jobs.
 Each paid tool accepts `effort` (`low|medium|high|xhigh|max`), passed through to the
 `claude` CLI's `--effort`. It defaults to `xhigh` — review depth is the whole point of
 this server. Lower it (`high`/`medium`) to trade rigor for cost on routine reviews, or
-set the default with `CC_PLUGIN_CODEX_EFFORT`. An unrecognized value falls back to the
-default rather than failing the call.
+set the default with `CC_PLUGIN_CODEX_EFFORT`. An invalid per-call `effort` is a typed
+enum, so it is rejected as a schema validation error before the tool runs; an
+unrecognized `CC_PLUGIN_CODEX_EFFORT` env value instead falls back to the default.
 
 ## Environment variables
 

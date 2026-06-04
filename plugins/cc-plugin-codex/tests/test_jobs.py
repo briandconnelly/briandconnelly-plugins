@@ -66,6 +66,10 @@ def test_job_done_returns_normalized_result(tmp_path):
     assert st["status"] == "done"
     assert st["result_available"] is True
     assert st["cost_usd"] == 0.0123
+    # Status output conforms to the published contract: carries the fingerprint and
+    # reports the deadline window the job started with (1800s), not a live env read.
+    assert st["fingerprint"]
+    assert st["deadline_seconds"] == 1800
 
     payload, found = jobs.result(cwd, job_id)
     assert found is True

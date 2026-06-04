@@ -27,7 +27,7 @@ from typing import Optional
 from uuid import uuid4
 
 from cc_plugin_codex.normalize import apply_cost_usage, normalize_envelope
-from cc_plugin_codex.schemas import ContextSummary, Meta
+from cc_plugin_codex.schemas import FINGERPRINT, ContextSummary, Meta
 
 STATE_ENV = "CC_PLUGIN_CODEX_STATE_DIR"
 TTL_ENV = "CC_PLUGIN_CODEX_JOB_TTL"
@@ -38,7 +38,7 @@ DEFAULT_TTL = 86_400          # delete terminal job records after 24h
 DEFAULT_MAX_SECONDS = 1_800   # wall-clock cap; a poll past this reaps the job
 DEFAULT_MAX_COUNT = 50        # retained jobs per workspace; evict oldest terminal
 
-_TERMINAL = {"done", "failed", "cancelled", "timeout", "expired"}
+_TERMINAL = {"done", "failed", "cancelled", "timeout"}
 
 
 def _int_env(name: str, default: int) -> int:
@@ -229,6 +229,16 @@ def _elapsed_ms(meta: dict) -> int:
     return max(0, int((end - meta.get("started_epoch", end)) * 1000))
 
 
+def _deadline_seconds(meta: dict) -> int:
+    """The wall-clock window the job was STARTED with (deadline minus start), not
+    the current env value — so status stays consistent if the env later changes."""
+    started = meta.get("started_epoch")
+    deadline = meta.get("deadline_epoch")
+    if started is not None and deadline is not None:
+        return max(0, int(round(deadline - started)))
+    return max_seconds()
+
+
 def _reap_workspace(cwd: str) -> None:
     """Lazy maintenance: refresh statuses and delete expired terminal records."""
     ws = _ws_dir(cwd)
@@ -310,9 +320,10 @@ def status(cwd: str, job_id: str) -> Optional[dict]:
         "ok": True, "job_id": job_id, "kind": meta.get("kind", ""),
         "status": state, "started_at": meta.get("started_at", ""),
         "elapsed_ms": _elapsed_ms(meta),
-        "deadline_seconds": max_seconds(),
+        "deadline_seconds": _deadline_seconds(meta),
         "result_available": state == "done",
         "cost_usd": cost, "detail": detail,
+        "fingerprint": FINGERPRINT,
     }
 
 
@@ -357,8 +368,6 @@ _STATE_TO_ERROR = {
                   "Start a new job; a cancelled run cannot be resumed."),
     "timeout": ("job_timeout", "The job exceeded its wall-clock deadline and was stopped.",
                 "Narrow the scope or raise CC_PLUGIN_CODEX_JOB_MAX_SECONDS, then start a new job."),
-    "expired": ("job_failed", "The job record expired and was cleaned up.",
-                "Start a new job."),
 }
 
 

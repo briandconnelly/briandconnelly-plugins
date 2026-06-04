@@ -489,7 +489,10 @@ async def claude_review_changes_async(
                       effort=effort)
     if err:
         return _result(err)
-    meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
+    # A background job is bounded by its wall-clock deadline, not the synchronous
+    # timeout_seconds; report that everywhere so meta stays consistent with the job.
+    job_timeout = jobs.max_seconds()
+    meta = _meta(cwd, r.config_mode, r.access, job_timeout, 0, None, scope, base,
                  workspace_source=ws_source)
     try:
         ctx_data = await anyio.to_thread.run_sync(
@@ -505,7 +508,7 @@ async def claude_review_changes_async(
         return _result(_err("internal_error", f"git failed: {e}",
                        "Ensure cwd is a git repo and base ref exists.", meta))
     if ctx_data.truncated:
-        meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
+        meta = _meta(cwd, r.config_mode, r.access, job_timeout, 0, None, scope, base,
                      truncated=True, hint=ctx_data.truncation_hint, workspace_source=ws_source)
         return _result(_err("context_too_large", "The diff is too large to review safely.",
                        ctx_data.truncation_hint or "Narrow the scope.", meta))
@@ -520,8 +523,8 @@ async def claude_review_changes_async(
         lambda: jobs.start_job(cmd, cwd, cfg))
     started = JobStarted(
         job_id=job_id, kind="claude_review_changes", started_at=started_at,
-        deadline_seconds=jobs.max_seconds(),
-        meta=_meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
+        deadline_seconds=job_timeout,
+        meta=_meta(cwd, r.config_mode, r.access, job_timeout, 0, None, scope, base,
                    workspace_source=ws_source),
     )
     return _result(started.model_dump(mode="json", exclude_none=True))
@@ -538,10 +541,10 @@ async def claude_job_status(
     """Report a background job's lifecycle state (free; no Claude call).
 
     Returns {ok, job_id, status, elapsed_ms, result_available, cost_usd?} where
-    status is running|done|failed|cancelled|timeout|expired. Call
-    claude_job_result once result_available is true. A running job past its
-    deadline is stopped and reported as timeout here. Returns job_not_found if the
-    id is unknown (or its record expired).
+    status is running|done|failed|cancelled|timeout. Call claude_job_result once
+    result_available is true. A running job past its deadline is stopped and
+    reported as timeout here. Returns job_not_found if the id is unknown (or its
+    record was cleaned up after the TTL).
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
