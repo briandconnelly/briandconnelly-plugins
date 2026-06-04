@@ -792,7 +792,7 @@ def claude_status() -> ToolResult:
     Free and read-only. Use first when unsure whether paid tools can run, or to
     inspect config_mode/access/model/effort/budget/timeout defaults.
     """
-    found = shutil.which("claude") is not None
+    found = shutil.which(cli_contract.CLAUDE_BIN) is not None
     version = None
     authenticated: bool | None = None
     auth_detail: str | None = None
