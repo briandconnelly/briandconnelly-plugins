@@ -324,6 +324,20 @@ def _build_meta(meta: dict, status: str) -> Meta:
     )
 
 
+def _terminal_cost(jd: Path, state: str) -> Optional[float]:
+    """Spend recorded by a terminal job, or None.
+
+    A cancelled/timeout job can still leave a parseable (possibly partial) envelope
+    that recorded cost, so we surface cost for ANY terminal state — matching the
+    result path (_job_error) and the JobStatus.cost_usd contract ('terminal jobs
+    that spent'), not just done."""
+    if state not in _TERMINAL:
+        return None
+    env = _read_envelope(jd) or {}
+    c = env.get("total_cost_usd")
+    return float(c) if isinstance(c, (int, float)) else None
+
+
 def status(cwd: str, job_id: str) -> Optional[dict]:
     """Return a JobStatus dict, or None if the job does not exist."""
     _reap_workspace(cwd)
@@ -332,11 +346,7 @@ def status(cwd: str, job_id: str) -> Optional[dict]:
     if meta is None:
         return None
     state = _status_of(jd, meta)
-    cost = None
-    if state == "done":
-        env = _read_envelope(jd) or {}
-        c = env.get("total_cost_usd")
-        cost = float(c) if isinstance(c, (int, float)) else None
+    cost = _terminal_cost(jd, state)
     detail = None
     if state == "failed":
         detail = _stderr_tail(jd)
@@ -370,11 +380,6 @@ def list_jobs(cwd: str) -> dict:
             if meta is None:
                 continue
             state = _status_of(jd, meta)
-            cost = None
-            if state == "done":
-                env = _read_envelope(jd) or {}
-                c = env.get("total_cost_usd")
-                cost = float(c) if isinstance(c, (int, float)) else None
             summaries.append({
                 "_epoch": meta.get("started_epoch", 0.0),
                 "job_id": meta.get("job_id", jd.name),
@@ -384,7 +389,7 @@ def list_jobs(cwd: str) -> dict:
                 "elapsed_ms": _elapsed_ms(meta),
                 "result_available": state == "done",
                 "expires_at": _expires_at(meta),
-                "cost_usd": cost,
+                "cost_usd": _terminal_cost(jd, state),
             })
     summaries.sort(key=lambda s: s["_epoch"], reverse=True)  # newest first
     for s in summaries:

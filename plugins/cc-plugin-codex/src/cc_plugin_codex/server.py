@@ -800,14 +800,6 @@ def _capabilities_payload() -> dict:
     return result.model_dump(mode="json", exclude_none=True)
 
 
-_CAPABILITIES_DOC = (
-    "Return the compact capability contract for this server: tool inventory (review, "
-    "second opinion, adversarial critique), scope/negative-scope, prerequisites, modes, "
-    "deprecation policy, and fingerprint.\n\n"
-    "Free and read-only. Call first when unsure which Claude review tool to use."
-)
-
-
 @mcp.tool(annotations=_FREE_READ_ANNOTATIONS, title="cc-plugin-codex capabilities",
           output_schema=CAPABILITIES_SCHEMA)
 def cc_codex_capabilities() -> ToolResult:
