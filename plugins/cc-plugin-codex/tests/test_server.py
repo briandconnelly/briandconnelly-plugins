@@ -160,13 +160,28 @@ async def test_capability_summary_declares_tier_and_blocking():
     summary = CAPABILITY_SUMMARY.lower()
     assert "experimental" in summary
     assert "cancel" in summary
+    assert len(CAPABILITY_SUMMARY) < 900
 
 
-async def test_review_tool_documents_scope_codes_ask_does_not():
-    # F6: scope/diff codes belong only on diff-bearing tools.
+async def test_tool_descriptions_are_concise_and_disambiguating():
     tools = await _tools_by_name()
-    assert "invalid_scope" in tools["claude_review_changes"].description
-    assert "invalid_scope" not in tools["claude_ask"].description
+    for tool in tools.values():
+        assert len(tool.description or "") <= 450, tool.name
+    assert "question or design choice" in tools["claude_ask"].description
+    assert "git diff" in tools["claude_review_changes"].description
+    assert "background" in tools["claude_review_changes_async"].description
+    assert "without deleting" in tools["claude_job_result"].description
+    assert "delete the stored job record" in tools["claude_job_consume_result"].description
+
+
+async def test_common_optional_params_are_described():
+    tools = await _tools_by_name()
+    for name in ("claude_ask", "claude_review_changes", "claude_adversarial_review"):
+        props = tools[name].inputSchema["properties"]
+        assert props["model"]["description"]
+        assert props["max_budget_usd"]["description"]
+        assert props["timeout_seconds"]["description"]
+    assert tools["claude_adversarial_review"].inputSchema["properties"]["base"]["description"]
 
 
 async def test_status_reports_config_modes(monkeypatch):
@@ -184,7 +199,7 @@ async def test_claude_ask_returns_normalized(fake_claude):
     data = structured(result)
     assert data["ok"] is True
     assert data["verdict"] == "concerns"
-    assert data["meta"]["fingerprint"] == "cc-plugin-codex/0.1/schema-7"
+    assert data["meta"]["fingerprint"] == "cc-plugin-codex/0.1/schema-8"
 
 
 async def test_invalid_enum_param_rejected_by_schema(fake_claude):
@@ -329,13 +344,12 @@ async def test_adversarial_invalid_scope_param_rejected_by_schema(fake_claude, m
     assert "working_tree" in str(exc.value)
 
 
-async def test_paid_docstrings_note_schema_validation_class(fake_claude):
-    # F2: docstrings must disclose that invalid enum values are rejected by the
-    # framework (a validation error), separate from the ok:false envelope.
+async def test_paid_tool_descriptions_do_not_inline_error_catalogs(fake_claude):
     tools = await _tools_by_name()
     for name in PAID_TOOLS:
         desc = tools[name].description.lower()
-        assert "schema" in desc or "validation error" in desc, name
+        assert "possible error codes" not in desc, name
+        assert "validation error" not in desc, name
 
 
 async def test_adversarial_bad_base_ref_is_structured_error(fake_claude, monkeypatch, git_repo):
@@ -540,7 +554,7 @@ async def test_capabilities_tool_returns_structured_contract():
     async with Client(mcp) as client:
         result = await client.call_tool("cc_codex_capabilities", {})
     data = structured(result)
-    assert data["fingerprint"] == "cc-plugin-codex/0.1/schema-7"
+    assert data["fingerprint"] == "cc-plugin-codex/0.1/schema-8"
     assert data["transport"] == "stdio"
     assert set(data["paid_tools"]) == {
         "claude_ask", "claude_review_changes", "claude_adversarial_review",

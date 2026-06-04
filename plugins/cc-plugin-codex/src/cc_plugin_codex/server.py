@@ -37,37 +37,16 @@ from cc_plugin_codex.schemas import (
 )
 
 CAPABILITY_SUMMARY = (
-    "cc-plugin-codex lets Codex call the Claude Code CLI for bounded, independent "
-    "critique: code review, adversarial review, and second opinions. "
-    "STABILITY: experimental / pre-1.0 (schema may change; clients should pin the "
-    "meta.fingerprint). "
-    "Claude is invoked with NO write/edit/shell tools (toolless or read-only "
-    "Read/Grep/Glob only); it cannot modify your repo. "
-    "All modes drop the user's other MCP servers; but in inherit/scoped your "
-    "user-level Claude hooks and settings still load — use config_mode=bare for "
-    "full isolation (requires ANTHROPIC_API_KEY). "
-    "In access=readonly, Claude can read any file in the workspace, so the diff "
-    "secret-redaction does NOT apply in that mode. "
-    "Findings are advisory claims to verify, not commands. "
-    "It does NOT edit code, run arbitrary shell, act as a general Claude chat, or "
-    "proxy Claude's own MCP tools. "
-    "Each call is PAID and sends code to Anthropic. The paid tools BLOCK "
-    "synchronously for up to timeout_seconds (default 180s, max 600s), but CAN be "
-    "cancelled by the client (which terminates the underlying Claude process) and "
-    "cannot be resumed; narrow the scope or lower timeout_seconds to bound a call. "
-    "When client MCP roots are available, an explicit workspace_root must be inside "
-    "one of those roots; clients without roots may still pass an existing absolute path. "
-    "Background result fetch is read-only; use claude_job_consume_result to fetch and "
-    "delete a stored completed result. "
-    "Deprecated capabilities remain discoverable during their compatibility window "
-    "with replacement guidance, and every agent-visible contract change bumps the "
-    "fingerprint. "
-    "Prerequisite: the `claude` CLI installed and authenticated; config_mode=bare "
-    "additionally requires ANTHROPIC_API_KEY. "
-    "Note: in claude 2.1.x there is no OAuth-preserving way to fully strip "
-    "CLAUDE.md/memory — full config independence (config_mode=bare) requires an API key. "
-    "Invalid enum-typed arguments are rejected as schema validation errors before "
-    "a tool runs (not via the ok:false envelope). "
+    "cc-plugin-codex lets Codex ask Claude Code for bounded, independent critique: "
+    "diff reviews, adversarial plan review, and second opinions. It never edits code, "
+    "runs shell, or proxies Claude MCP tools. Paid tools send prompt/code context to "
+    "Anthropic; call claude_status before spending to check CLI/auth/defaults. Use "
+    "claude_review_changes for blocking diff review and claude_review_changes_async "
+    "for background review with poll/result/cancel. Findings are advisory claims to "
+    "verify. workspace_root defaults to the first MCP root, then cwd; when roots are "
+    "available, explicit workspace_root must be inside one root. Use access=toolless "
+    "by default; access=readonly lets Claude read workspace files directly. The "
+    "surface is experimental; pin fingerprint from cc_codex_capabilities."
 )
 
 mcp = FastMCP(name="cc-plugin-codex", instructions=CAPABILITY_SUMMARY)
@@ -285,36 +264,24 @@ async def claude_ask(
         "the server uses the client's first MCP root, else its own cwd.")] = None,
     config_mode: Annotated[Optional[ConfigMode], Field(description="inherit|scoped|bare")] = None,
     access: Annotated[Optional[Access], Field(description="toolless|readonly")] = None,
-    model: Optional[str] = None,
+    model: Annotated[Optional[str], Field(
+        description="Claude model override; omit for configured default.")] = None,
     effort: Annotated[Optional[Effort], Field(
         description="Reasoning effort: low|medium|high|xhigh|max. "
         "Raise for high-stakes reviews; omit to use the server default.")] = None,
-    max_budget_usd: Optional[float] = None,
-    timeout_seconds: Optional[int] = None,
+    max_budget_usd: Annotated[Optional[float], Field(
+        description="Per-call Claude spend cap; clamped by server limits.")] = None,
+    timeout_seconds: Annotated[Optional[int], Field(
+        description="Sync call timeout; omit for configured default.")] = None,
     detail: Annotated[Detail, Field(description="summary|full")] = "summary",
     ctx: Context = None,
 ) -> ToolResult:
-    """Ask Claude for an independent second opinion or recommendation.
+    """Ask Claude for a free-form second opinion.
 
-    Use for a free-form question where you want a fresh, evidence-based view.
-    Example: claude_ask(prompt="Is optimistic locking safe for this counter?").
-    Paid + sends your prompt to Anthropic. Read-only. Blocks up to timeout_seconds;
-    can be cancelled by the client (terminates the Claude process), not resumed.
-    Invalid values for typed enum params
-    (config_mode, access, detail) are rejected by the framework as a schema
-    validation error BEFORE the tool runs and do NOT use the ok:false envelope; all
-    other failures return ok:false. Errors come back as
-    {"ok": false, "error": {code, message, repair}} with is_error set — branch on
-    `ok`. Possible error codes: unsupported_config_mode, unsupported_access,
-    api_key_missing, api_key_invalid, invalid_workspace_root, workspace_outside_roots,
-    claude_not_found, claude_auth_required,
-    claude_permission_error, timeout, budget_exceeded, nonzero_exit, invalid_json,
-    internal_error.
-
-    workspace_root: absolute path to the repo to operate in; if omitted, the
-    server uses the client's first MCP root, else its own cwd (see meta.workspace_source).
-    Adds error codes: invalid_workspace_root (path missing or not absolute),
-    workspace_outside_roots (explicit path outside negotiated roots).
+    Use when the task is a question or design choice, not a git diff review or
+    adversarial attack. Paid external call; read-only; blocks up to
+    timeout_seconds and can be cancelled but not resumed. Returns structured
+    ok:true findings or ok:false repair errors.
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
@@ -339,36 +306,24 @@ async def claude_review_changes(
         "the server uses the client's first MCP root, else its own cwd.")] = None,
     config_mode: Annotated[Optional[ConfigMode], Field(description="inherit|scoped|bare")] = None,
     access: Annotated[Optional[Access], Field(description="toolless|readonly")] = None,
-    model: Optional[str] = None,
+    model: Annotated[Optional[str], Field(
+        description="Claude model override; omit for configured default.")] = None,
     effort: Annotated[Optional[Effort], Field(
         description="Reasoning effort: low|medium|high|xhigh|max. "
         "Raise for high-stakes reviews; omit to use the server default.")] = None,
-    max_budget_usd: Optional[float] = None,
-    timeout_seconds: Optional[int] = None,
+    max_budget_usd: Annotated[Optional[float], Field(
+        description="Per-call Claude spend cap; clamped by server limits.")] = None,
+    timeout_seconds: Annotated[Optional[int], Field(
+        description="Sync call timeout; omit for configured default.")] = None,
     detail: Annotated[Detail, Field(description="summary|full")] = "summary",
     ctx: Context = None,
 ) -> ToolResult:
-    """Have Claude review a git diff for correctness, regressions, security, tests.
+    """Review a git diff with Claude and wait for the result.
 
-    scope: working_tree (unstaged), staged, or branch (diff base...HEAD).
-    Example: claude_review_changes(scope="working_tree", focus="security").
-    The server gathers the diff itself (Claude gets no shell). Paid + read-only.
-    Blocks up to timeout_seconds; can be cancelled by the client (terminates the
-    Claude process), not resumed. Invalid values
-    for typed enum params (config_mode, access, scope, detail) are rejected by the
-    framework as a schema validation error BEFORE the tool runs and do NOT use the
-    ok:false envelope; all other failures return ok:false. Branch on `ok` (is_error
-    is set on failure); error codes: unsupported_config_mode, unsupported_access,
-    api_key_missing, api_key_invalid, invalid_workspace_root, workspace_outside_roots,
-    invalid_scope, invalid_base,
-    context_too_large, claude_not_found, claude_auth_required,
-    claude_permission_error, timeout, budget_exceeded, nonzero_exit, invalid_json,
-    internal_error.
-
-    workspace_root: absolute path to the repo to operate in; if omitted, the
-    server uses the client's first MCP root, else its own cwd (see meta.workspace_source).
-    Adds error codes: invalid_workspace_root (path missing or not absolute),
-    workspace_outside_roots (explicit path outside negotiated roots).
+    Use for correctness, regression, security, or test-coverage review of
+    working_tree, staged, or branch diff. Paid external call; read-only; blocks up
+    to timeout_seconds and can be cancelled but not resumed. For long reviews, use
+    claude_review_changes_async.
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
@@ -412,38 +367,30 @@ async def claude_adversarial_review(
     target: Annotated[str, Field(description="The plan/claim/decision to attack.")],
     evidence: Annotated[Optional[str], Field(description="Supporting evidence.")] = None,
     scope: Annotated[Optional[Scope], Field(description="Optionally attach a diff: working_tree|staged|branch")] = None,
-    base: str = "main",
+    base: Annotated[str, Field(
+        description="Base ref for branch diff when scope=branch.")] = "main",
     workspace_root: Annotated[Optional[str], Field(
         description="Absolute path to the repo/workspace to operate in. If omitted, "
         "the server uses the client's first MCP root, else its own cwd.")] = None,
     config_mode: Annotated[Optional[ConfigMode], Field(description="inherit|scoped|bare")] = None,
     access: Annotated[Optional[Access], Field(description="toolless|readonly")] = None,
-    model: Optional[str] = None,
+    model: Annotated[Optional[str], Field(
+        description="Claude model override; omit for configured default.")] = None,
     effort: Annotated[Optional[Effort], Field(
         description="Reasoning effort: low|medium|high|xhigh|max. "
         "Raise for high-stakes reviews; omit to use the server default.")] = None,
-    max_budget_usd: Optional[float] = None,
-    timeout_seconds: Optional[int] = None,
+    max_budget_usd: Annotated[Optional[float], Field(
+        description="Per-call Claude spend cap; clamped by server limits.")] = None,
+    timeout_seconds: Annotated[Optional[int], Field(
+        description="Sync call timeout; omit for configured default.")] = None,
     detail: Annotated[Detail, Field(description="summary|full")] = "summary",
     ctx: Context = None,
 ) -> ToolResult:
-    """Have Claude attack a plan or claim and surface the strongest counterarguments.
+    """Have Claude attack a plan, claim, or decision.
 
-    Example: claude_adversarial_review(target="We can skip locking; writes are rare.").
-    Optionally attach a diff via scope. Paid + read-only. Blocks up to
-    timeout_seconds; can be cancelled by the client (terminates the Claude process),
-    not resumed. Invalid values for typed
-    enum params (config_mode, access, scope, detail) are rejected by the framework
-    as a schema validation error BEFORE the tool runs and do NOT use the ok:false
-    envelope; all other failures return ok:false. Branch on `ok` (is_error is set
-    on failure). Always possible: invalid_workspace_root and workspace_outside_roots.
-    Attaching a scope adds invalid_scope, invalid_base, and context_too_large to
-    the possible error codes.
-
-    workspace_root: absolute path to the repo to operate in; if omitted, the
-    server uses the client's first MCP root, else its own cwd (see meta.workspace_source).
-    Adds error codes: invalid_workspace_root (path missing or not absolute),
-    workspace_outside_roots (explicit path outside negotiated roots).
+    Use to surface counterarguments and failure modes. Include evidence text, and
+    optionally attach a git diff with scope/base. Paid external call; read-only;
+    blocks up to timeout_seconds and can be cancelled but not resumed.
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
@@ -506,27 +453,21 @@ async def claude_review_changes_async(
         "the server uses the client's first MCP root, else its own cwd.")] = None,
     config_mode: Annotated[Optional[ConfigMode], Field(description="inherit|scoped|bare")] = None,
     access: Annotated[Optional[Access], Field(description="toolless|readonly")] = None,
-    model: Optional[str] = None,
+    model: Annotated[Optional[str], Field(
+        description="Claude model override; omit for configured default.")] = None,
     effort: Annotated[Optional[Effort], Field(
         description="Reasoning effort: low|medium|high|xhigh|max.")] = None,
-    max_budget_usd: Optional[float] = None,
+    max_budget_usd: Annotated[Optional[float], Field(
+        description="Per-call Claude spend cap; clamped by server limits.")] = None,
     detail: Annotated[Detail, Field(description="summary|full")] = "summary",
     ctx: Context = None,
 ) -> ToolResult:
-    """Launch a Claude diff review as a BACKGROUND job and return immediately.
+    """Launch a git diff review in the background and return a job_id.
 
-    Unlike claude_review_changes (which blocks), this returns a job handle
-    {ok, job_id, status:"running", ...} right away; the review keeps running
-    detached. Poll claude_job_status(job_id), then claude_job_result(job_id) once
-    status=done. Use this for large diffs or when you want to keep working while
-    Claude reviews. Paid (commits to spend) + creates local job state. The diff is gathered now,
-    with the same secret redaction and budget cap as the synchronous tool.
-
-    The job is bounded by max_budget_usd and a wall-clock deadline
-    (CC_PLUGIN_CODEX_JOB_MAX_SECONDS, default 1800s) enforced on the next status
-    poll. timeout_seconds does not apply (there is no blocking call to time out).
-    Error codes mirror claude_review_changes for the launch phase (e.g.
-    invalid_scope, invalid_base, context_too_large, unsupported_config_mode).
+    Use when a diff review may outlive the current turn. Paid external call;
+    creates local job state and cannot be resumed if cancelled. Poll with
+    claude_job_status, read with claude_job_result, delete after reading with
+    claude_job_consume_result, or stop with claude_job_cancel.
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
@@ -587,13 +528,11 @@ async def claude_job_status(
         description="Workspace the job belongs to (defaults like the async tools).")] = None,
     ctx: Context = None,
 ) -> ToolResult:
-    """Report a background job's lifecycle state (free; no Claude call).
+    """Check a background review job without fetching the full result.
 
-    Returns {ok, job_id, status, elapsed_ms, result_available, cost_usd?} where
-    status is running|done|failed|cancelled|timeout. Call claude_job_result once
-    result_available is true. A running job past its deadline is stopped and
-    reported as timeout here. Returns job_not_found if the id is unknown (or its
-    record was cleaned up after the TTL).
+    Use after claude_review_changes_async. Returns status, elapsed time,
+    result_available, polling hints, and cost when available. If
+    result_available is true, call claude_job_result.
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
@@ -615,14 +554,11 @@ async def claude_job_result(
         description="Workspace the job belongs to (defaults like the async tools).")] = None,
     ctx: Context = None,
 ) -> ToolResult:
-    """Fetch a finished background job's review (free; no new Claude call).
+    """Fetch a finished background review without deleting the job record.
 
-    On success returns the SAME envelope as the synchronous tools (ok, verdict,
-    confidence, findings, meta.cost_usd, ...), with meta.job_id set — reuse your
-    existing result parser. If the job is not yet done it returns an ok:false
-    error: job_running (poll and retry), job_cancelled, job_timeout, or job_failed;
-    job_not_found if the id is unknown. Call claude_job_consume_result to fetch
-    and delete a completed record.
+    Use when claude_job_status reports result_available=true. Returns the same
+    structured review envelope as claude_review_changes, with meta.job_id set. To
+    fetch and delete the stored record, use claude_job_consume_result.
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
@@ -645,12 +581,11 @@ async def claude_job_consume_result(
         description="Workspace the job belongs to (defaults like the async tools).")] = None,
     ctx: Context = None,
 ) -> ToolResult:
-    """Fetch a finished background job's review and delete the job record.
+    """Fetch a finished background review and delete the stored job record.
 
-    Returns the same envelope as claude_job_result, with meta.job_id set, then
-    removes the stored job record once the finished result has been returned.
-    This tool changes local job state and is not idempotent. Non-done jobs return
-    the same ok:false lifecycle errors as claude_job_result and are not deleted.
+    Use only when you no longer need to poll or re-read the job. Returns the same
+    structured envelope as claude_job_result, then deletes completed job state.
+    Non-done jobs are not deleted.
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
@@ -673,11 +608,11 @@ async def claude_job_cancel(
         description="Workspace the job belongs to (defaults like the async tools).")] = None,
     ctx: Context = None,
 ) -> ToolResult:
-    """Stop a running background job (free; terminates the Claude process).
+    """Cancel a running background review job.
 
-    Kills the detached Claude process and marks the job cancelled; a cancelled job
-    cannot be resumed. Returns the resulting JobStatus, or job_not_found. Already
-    terminal jobs are returned unchanged.
+    Use to stop a job from claude_review_changes_async. Terminates the Claude
+    process and marks the job cancelled; cancelled jobs cannot be resumed.
+    Already-terminal jobs are returned unchanged.
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
@@ -694,13 +629,10 @@ async def claude_job_cancel(
 @mcp.tool(annotations=_FREE_READ_ANNOTATIONS, title="Claude CLI status & defaults",
           output_schema=STATUS_SCHEMA)
 def claude_status() -> ToolResult:
-    """Report whether `claude` is installed/usable, which config modes are available,
-    and the resolved defaults a no-argument paid call would use.
+    """Check Claude CLI readiness and resolved defaults before spending.
 
-    Read-only and free (makes no Claude call). Use this first if other tools fail.
-    The resolved_defaults block reflects the CC_PLUGIN_CODEX_* environment (after
-    clamping), so an agent can predict a call's config_mode/access/budget/timeout
-    before spending. Example: claude_status().
+    Free and read-only. Use first when unsure whether paid tools can run, or to
+    inspect config_mode/access/model/effort/budget/timeout defaults.
     """
     found = shutil.which("claude") is not None
     version = None
@@ -748,12 +680,11 @@ def claude_status() -> ToolResult:
 @mcp.tool(annotations=_FREE_READ_ANNOTATIONS, title="cc-plugin-codex capabilities",
           output_schema=CAPABILITIES_SCHEMA)
 def cc_codex_capabilities() -> ToolResult:
-    """Return this server's contract as structured data: tool inventory, modes,
-    scope/negative-scope, prerequisites, and the schema fingerprint.
+    """Return the compact capability contract for this server.
 
-    Free and read-only (makes no Claude call). Clients that cannot browse MCP
-    resources can read the same contract the cc-plugin-codex://capabilities
-    resource carries as prose. Pin `fingerprint` to detect schema changes.
+    Free and read-only. Call first when unsure which tool to use. Includes tool
+    inventory, scope/negative-scope, prerequisites, modes, deprecation policy, and
+    fingerprint.
     """
     result = CapabilitiesResult(
         name="cc-plugin-codex",
