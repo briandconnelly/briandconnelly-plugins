@@ -22,7 +22,7 @@ from cc_plugin_codex.claude import (
 from cc_plugin_codex.config import (
     MAX_BUDGET_USD, MAX_TIMEOUT_SECONDS, MIN_BUDGET_USD, MIN_TIMEOUT_SECONDS,
     VALID_EFFORTS, bare_available, clamp_budget, clamp_timeout, defaults,
-    sanitize_effort, version_supported,
+    max_input_bytes, sanitize_effort, version_supported,
 )
 from cc_plugin_codex.context import (
     MAX_DIFF_BYTES, InvalidBaseError, InvalidScopeError, gather_context,
@@ -34,8 +34,8 @@ from cc_plugin_codex.schemas import (
     CAPABILITIES_SCHEMA, DRY_RUN_SCHEMA, FINGERPRINT, JOB_LIST_SCHEMA,
     JOB_STARTED_SCHEMA, JOB_STATUS_SCHEMA, RESULT_SCHEMA, STATUS_SCHEMA,
     Access, CapabilitiesResult, ConfigMode, Detail, DryRunResult, Effort,
-    ErrorInfo, ErrorResult, JobStarted, Meta, ResolvedDefaults, Scope, StatusResult,
-    workspace_warning_for,
+    ErrorInfo, ErrorResult, JobStarted, Meta, RawResponse, ResolvedDefaults, Scope,
+    StatusResult, SuccessResult, workspace_warning_for,
 )
 
 CAPABILITY_SUMMARY = (
@@ -46,9 +46,10 @@ CAPABILITY_SUMMARY = (
     "claude_review_changes_async runs in background with poll/result/cancel; "
     "claude_review_dry_run previews workspace/diff-size/redaction for free. Findings "
     "are advisory claims to verify. Pass workspace_root explicitly: it defaults to "
-    "the first MCP root, else the server's own cwd (likely NOT your repo); when roots "
+    "the first MCP root, else the server cwd (likely NOT your repo); when roots "
     "exist it must be inside one. access=toolless is the default; access=readonly "
-    "lets Claude read files directly, bypassing filename-based secret redaction. "
+    "lets Claude read files directly, bypassing server-gathered diff redaction. "
+    "Free-form input is capped by CC_PLUGIN_CODEX_MAX_INPUT_BYTES. "
     "Experimental; pin fingerprint from cc_codex_capabilities."
 )
 
@@ -87,13 +88,15 @@ def _meta(cwd: str, config_mode: str, access: str, timeout: int, elapsed: int,
           exit_code: int | None, scope: str | None = None, base: str | None = None,
           truncated: bool = False, hint: str | None = None,
           workspace_source: str | None = None,
-          requested_budget: float | None = None) -> Meta:
+          requested_budget: float | None = None,
+          redacted_paths: list[str] | None = None) -> Meta:
     return Meta(cwd=cwd, config_mode=config_mode, access=access, scope=scope, base=base,
                 timeout_seconds=timeout, elapsed_ms=elapsed, command_exit_code=exit_code,
                 truncated=truncated, truncation_hint=hint, fingerprint=FINGERPRINT,
                 workspace_source=workspace_source,
                 workspace_warning=workspace_warning_for(workspace_source, cwd),
-                requested_max_budget_usd=requested_budget)
+                requested_max_budget_usd=requested_budget,
+                redacted_paths=redacted_paths or [])
 
 
 def _err(code: str, message: str, repair: str, meta: Meta,
@@ -190,6 +193,40 @@ async def _resolve_workspace(workspace_root, ctx):
     return path, None, source
 
 
+def _utf8_len(value: str | None) -> int:
+    return len((value or "").encode("utf-8", "replace"))
+
+
+def _validate_input_size(fields: dict[str, str | None], meta: Meta) -> dict | None:
+    limit = max_input_bytes()
+    total = sum(_utf8_len(value) for value in fields.values())
+    if total <= limit:
+        return None
+    largest = max(fields, key=lambda key: _utf8_len(fields[key]))
+    return _err(
+        "context_too_large",
+        f"User-supplied text is {total} bytes, exceeding the {limit}-byte limit.",
+        "Shorten the prompt/evidence/context, split the request, or raise "
+        "CC_PLUGIN_CODEX_MAX_INPUT_BYTES if this workspace intentionally allows it.",
+        meta,
+        offending=largest,
+    )
+
+
+def _empty_diff_result(tool: str, meta: Meta, context_summary,
+                       verdict: str = "pass", confidence: str = "high") -> dict:
+    result = SuccessResult(
+        tool=tool,
+        summary="No changes in scope; skipped Claude call.",
+        verdict=verdict,
+        confidence=confidence,
+        raw_response=RawResponse(),
+        context_summary=context_summary,
+        meta=meta,
+    )
+    return result.model_dump(mode="json", exclude_none=True)
+
+
 @dataclass
 class Resolved:
     config_mode: str
@@ -240,12 +277,13 @@ def _resolve(config_mode, access, model, max_budget_usd, timeout_seconds, detail
 
 async def _execute(tool, payload, r: Resolved, cwd,
                    scope=None, base=None, context_text="", context_summary=None,
-                   workspace_source=None) -> dict:
+                   workspace_source=None, redacted_paths: list[str] | None = None) -> dict:
     prompt = build_prompt(tool, payload, context_text)
     cmd = build_command(prompt, r.config_mode, r.access, r.model, r.budget, r.effort)
     run = await run_claude_async(cmd, cwd=cwd, timeout_seconds=r.timeout)
     meta = _meta(cwd, r.config_mode, r.access, r.timeout, run.elapsed_ms, run.exit_code,
-                 scope, base, workspace_source=workspace_source, requested_budget=r.budget)
+                 scope, base, workspace_source=workspace_source, requested_budget=r.budget,
+                 redacted_paths=redacted_paths)
     if run.exit_code != 0 or run.timed_out:
         # A non-zero exit can still carry a cost-bearing JSON envelope (e.g.
         # budget_exceeded); report what it spent when available.
@@ -287,8 +325,9 @@ async def claude_ask(
 
     Use when the task is a question or design choice, not a git diff review or
     adversarial attack. Paid external call; read-only; blocks up to
-    timeout_seconds and can be cancelled but not resumed. Returns structured
-    ok:true findings or ok:false repair errors.
+    timeout_seconds and can be cancelled but not resumed. Free-form input is
+    size-capped before spend. Returns structured ok:true findings or ok:false
+    repair errors.
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
@@ -298,6 +337,11 @@ async def claude_ask(
     if err:
         return _result(err)
     payload = {"prompt": prompt, "context": context}
+    meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None,
+                 workspace_source=ws_source, requested_budget=r.budget)
+    too_large = _validate_input_size(payload, meta)
+    if too_large:
+        return _result(too_large)
     out = await _execute("claude_ask", payload, r, cwd, workspace_source=ws_source)
     return _result(out)
 
@@ -330,7 +374,7 @@ async def claude_review_changes(
     Use for correctness, regression, security, or test-coverage review of
     working_tree, staged, or branch diff. Paid external call; read-only; blocks up
     to timeout_seconds and can be cancelled but not resumed. For long reviews, use
-    claude_review_changes_async.
+    claude_review_changes_async. Empty diffs return ok:true without calling Claude.
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
@@ -359,13 +403,19 @@ async def claude_review_changes(
     if ctx_data.truncated:
         meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
                      truncated=True, hint=ctx_data.truncation_hint, workspace_source=ws_source,
-                     requested_budget=r.budget)
+                     requested_budget=r.budget, redacted_paths=ctx_data.redacted_paths)
         return _result(_err("context_too_large", "The diff is too large to review safely.",
                        ctx_data.truncation_hint or "Narrow the scope.", meta))
+    meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
+                 workspace_source=ws_source, requested_budget=r.budget,
+                 redacted_paths=ctx_data.redacted_paths)
+    if ctx_data.summary.files_changed == 0 and not ctx_data.text.strip():
+        return _result(_empty_diff_result("claude_review_changes", meta, ctx_data.summary))
     out = await _execute(
         "claude_review_changes", {"scope": scope, "base": base, "focus": focus},
         r, cwd, scope=scope, base=base, context_text=ctx_data.text,
-        context_summary=ctx_data.summary, workspace_source=ws_source)
+        context_summary=ctx_data.summary, workspace_source=ws_source,
+        redacted_paths=ctx_data.redacted_paths)
     return _result(out)
 
 
@@ -398,7 +448,9 @@ async def claude_adversarial_review(
 
     Use to surface counterarguments and failure modes. Include evidence text, and
     optionally attach a git diff with scope/base. Paid external call; read-only;
-    blocks up to timeout_seconds and can be cancelled but not resumed.
+    blocks up to timeout_seconds and can be cancelled but not resumed. Free-form
+    input is size-capped before spend; an empty attached diff returns ok:true
+    without calling Claude.
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
@@ -408,8 +460,15 @@ async def claude_adversarial_review(
                       effort=effort)
     if err:
         return _result(err)
+    payload = {"target": target, "evidence": evidence}
+    meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
+                 workspace_source=ws_source, requested_budget=r.budget)
+    too_large = _validate_input_size(payload, meta)
+    if too_large:
+        return _result(too_large)
     context_text = ""
     context_summary = None
+    redacted_paths: list[str] = []
     if scope:
         meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
                      workspace_source=ws_source)
@@ -430,15 +489,25 @@ async def claude_adversarial_review(
         if ctx_data.truncated:
             meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
                          truncated=True, hint=ctx_data.truncation_hint,
-                         workspace_source=ws_source)
+                         workspace_source=ws_source, requested_budget=r.budget,
+                         redacted_paths=ctx_data.redacted_paths)
             return _result(_err("context_too_large",
                            "The attached diff is too large to review safely.",
                            ctx_data.truncation_hint or "Narrow the scope.", meta))
+        meta = _meta(cwd, r.config_mode, r.access, r.timeout, 0, None, scope, base,
+                     workspace_source=ws_source, requested_budget=r.budget,
+                     redacted_paths=ctx_data.redacted_paths)
+        if ctx_data.summary.files_changed == 0 and not ctx_data.text.strip():
+            return _result(_empty_diff_result("claude_adversarial_review", meta,
+                                              ctx_data.summary, verdict="unknown",
+                                              confidence="low"))
         context_text, context_summary = ctx_data.text, ctx_data.summary
+        redacted_paths = ctx_data.redacted_paths
     out = await _execute(
-        "claude_adversarial_review", {"target": target, "evidence": evidence},
+        "claude_adversarial_review", payload,
         r, cwd, scope=scope, base=base, context_text=context_text,
-        context_summary=context_summary, workspace_source=ws_source)
+        context_summary=context_summary, workspace_source=ws_source,
+        redacted_paths=redacted_paths)
     return _result(out)
 
 
@@ -476,7 +545,8 @@ async def claude_review_changes_async(
     Use when a diff review may outlive the current turn. Paid external call;
     creates local job state and cannot be resumed if cancelled. Poll with
     claude_job_status, read with claude_job_result, delete after reading with
-    claude_job_consume_result, or stop with claude_job_cancel.
+    claude_job_consume_result, or stop with claude_job_cancel. Empty diffs return
+    ok:true immediately without starting a job.
     """
     cwd, ws_err, ws_source = await _resolve_workspace(workspace_root, ctx)
     if ws_err:
@@ -507,16 +577,22 @@ async def claude_review_changes_async(
     if ctx_data.truncated:
         meta = _meta(cwd, r.config_mode, r.access, job_timeout, 0, None, scope, base,
                      truncated=True, hint=ctx_data.truncation_hint, workspace_source=ws_source,
-                     requested_budget=r.budget)
+                     requested_budget=r.budget, redacted_paths=ctx_data.redacted_paths)
         return _result(_err("context_too_large", "The diff is too large to review safely.",
                        ctx_data.truncation_hint or "Narrow the scope.", meta))
+    meta = _meta(cwd, r.config_mode, r.access, job_timeout, 0, None, scope, base,
+                 workspace_source=ws_source, requested_budget=r.budget,
+                 redacted_paths=ctx_data.redacted_paths)
+    if ctx_data.summary.files_changed == 0 and not ctx_data.text.strip():
+        return _result(_empty_diff_result("claude_review_changes", meta, ctx_data.summary))
     prompt = build_prompt("claude_review_changes",
                           {"scope": scope, "base": base, "focus": focus}, ctx_data.text)
     cmd = build_command(prompt, r.config_mode, r.access, r.model, r.budget, r.effort)
     cfg = JobConfig(kind="claude_review_changes", config_mode=r.config_mode,
                     access=r.access, scope=scope, base=base, detail=r.detail,
                     timeout_seconds=jobs.max_seconds(), workspace_source=ws_source,
-                    context_summary=ctx_data.summary, requested_max_budget_usd=r.budget)
+                    context_summary=ctx_data.summary, requested_max_budget_usd=r.budget,
+                    redacted_paths=ctx_data.redacted_paths)
     job_id, started_at = await anyio.to_thread.run_sync(
         lambda: jobs.start_job(cmd, cwd, cfg))
     started = JobStarted(
@@ -525,7 +601,8 @@ async def claude_review_changes_async(
         poll_after_ms=jobs.poll_after_ms(),
         ttl_seconds=jobs.ttl_seconds(),
         meta=_meta(cwd, r.config_mode, r.access, job_timeout, 0, None, scope, base,
-                   workspace_source=ws_source, requested_budget=r.budget),
+                   workspace_source=ws_source, requested_budget=r.budget,
+                   redacted_paths=ctx_data.redacted_paths),
     )
     return _result(started.model_dump(mode="json", exclude_none=True))
 
@@ -783,8 +860,8 @@ def _capabilities_payload() -> dict:
             "does NOT act as a general Claude chat",
             "does NOT proxy Claude's own MCP tools",
             "does NOT resume a call once it ends or is cancelled",
-            "does NOT content-scan for secrets; with access=readonly Claude can read "
-            "workspace files directly, bypassing filename-based redaction",
+            "does NOT guarantee secret removal; diff redaction is best-effort and "
+            "access=readonly lets Claude read workspace files directly",
         ],
         prerequisites=[
             "the `claude` CLI installed and authenticated",

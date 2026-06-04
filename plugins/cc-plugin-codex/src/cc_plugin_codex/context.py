@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 from dataclasses import dataclass, field
 
+from cc_plugin_codex.config import git_timeout_seconds
 from cc_plugin_codex.schemas import ContextSummary
 
 MAX_DIFF_BYTES = 200_000
@@ -31,6 +33,15 @@ SECRET_PATH_RE = re.compile(
     re.IGNORECASE,
 )
 
+SECRET_VALUE_PATTERNS = [
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"),
+    re.compile(r"xox[baprs]-[A-Za-z0-9-]{20,}"),
+    re.compile(r"(?i)(Authorization:\s*Bearer\s+)[A-Za-z0-9._~+/=-]{16,}"),
+    re.compile(r"(?i)((?:api|access|secret|private)?_?(?:key|token|secret)\s*[:=]\s*['\"]?)[A-Za-z0-9._~+/=-]{16,}"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+]
+
 
 @dataclass
 class ContextResult:
@@ -43,7 +54,14 @@ class ContextResult:
 
 
 def _git(cwd: str, *args: str) -> str:
-    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    timeout = git_timeout_seconds()
+    try:
+        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True,
+                              timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"git {' '.join(args)} timed out after {timeout}s"
+        ) from exc
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "git failed")
     return proc.stdout
@@ -80,20 +98,57 @@ def _summary(cwd: str, diff_args: list[str]) -> ContextSummary:
     return ContextSummary(files_changed=files, lines_added=added, lines_removed=removed)
 
 
+def _diff_path_from_header(line: str) -> str:
+    spec = line[len("diff --git "):]
+    try:
+        parts = shlex.split(spec)
+    except ValueError:
+        parts = spec.split()
+    if len(parts) >= 2:
+        path = parts[1]
+        return path[2:] if path.startswith("b/") else path
+    return spec
+
+
+def _redact_secret_values(line: str) -> tuple[str, bool]:
+    redacted = False
+    out = line
+    for pattern in SECRET_VALUE_PATTERNS:
+        def repl(match: re.Match) -> str:
+            nonlocal redacted
+            redacted = True
+            if match.lastindex:
+                return f"{match.group(1)}[redacted: secret value]"
+            return "[redacted: secret value]"
+        out = pattern.sub(repl, out)
+    return out, redacted
+
+
 def _redact(diff: str) -> tuple[str, list[str]]:
     out_lines: list[str] = []
     redacted: list[str] = []
     skipping = False
+    current_path = ""
     for line in diff.splitlines():
         if line.startswith("diff --git "):
             spec = line[len("diff --git "):]  # "a/<path> b/<path>" (paths may be quoted)
+            current_path = _diff_path_from_header(line)
             skipping = bool(SECRET_PATH_RE.search(spec))
             if skipping:
-                redacted.append(spec)
+                redacted.append(current_path or spec)
                 out_lines.append(line)  # keep the real header so reviewers see the file
                 out_lines.append("[redacted: secret-looking file not sent]")
                 continue
         if not skipping:
+            scan_line = (
+                (line.startswith(("+", "-", " ")) and
+                 not line.startswith(("+++", "---"))) or
+                line.startswith("Authorization:")
+            )
+            if scan_line:
+                line, changed = _redact_secret_values(line)
+                if changed and current_path and current_path not in redacted:
+                    redacted.append(current_path)
             out_lines.append(line)
     return "\n".join(out_lines), redacted
 

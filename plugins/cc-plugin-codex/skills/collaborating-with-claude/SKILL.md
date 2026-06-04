@@ -30,7 +30,7 @@ Do NOT call Claude in a loop, and never call Claude just because Claude suggeste
 - `claude_review_changes_async` — same review as a background job for large diffs or when you want to keep working; returns a `job_id`. Poll `claude_job_status`, then `claude_job_result` (same envelope as the sync tool). Use `claude_job_consume_result` only when you want to fetch and delete the stored record; use `claude_job_cancel` to stop it.
 - `claude_adversarial_review` — Claude attacks a plan/claim and lists the strongest counterarguments.
 - `claude_status` — free readiness check: reports whether `claude` is installed, authenticated (`claude_authenticated`), version-compatible (`version_supported`), and overall `ready`, plus the resolved defaults a no-arg call would use. Run it first if a call fails, or to confirm readiness before spending.
-- `claude_review_dry_run` — free preview of what a diff review would send: resolved workspace, diff byte size, whether it would be truncated, and how many secret-looking files would be redacted. No paid call. Run it before a large review to confirm scope and workspace.
+- `claude_review_dry_run` — free preview of what a diff review would send: resolved workspace, diff byte size, whether it would be truncated, and which paths would be redacted. No paid call. Run it before a large review to confirm scope and workspace.
 - `claude_job_list` — free list of this workspace's background jobs (id, status, cost), newest first. Use it to recover a `job_id` lost across context compaction or interruption.
 - `cc_codex_capabilities` (alias `claude_capabilities`) — free capability contract: tool inventory, scope, prerequisites, and the fingerprint to pin.
 
@@ -45,8 +45,9 @@ Do NOT call Claude in a loop, and never call Claude just because Claude suggeste
 
 - Each call is PAID and sends your code/diff to Anthropic. Call deliberately. Even a one-sentence `claude_ask` costs roughly `$0.02`; a real review costs more, so budgets below ~`$0.05` will usually trip `budget_exceeded`.
 - `max_budget_usd` is a best-effort stop threshold enforced by the Claude CLI, NOT a hard cap — reported `meta.cost_usd` can exceed it. `meta.requested_max_budget_usd` echoes the value sent so you can compare requested vs actual.
-- The server never sends `.env`/secret files in the diff it gathers; redaction is filename-based, not content-scanning, so do not paste secrets into prompts and do not rely on it to catch secrets hardcoded inside ordinary source files.
+- The server redacts `.env`/secret-looking files and high-confidence token/key patterns in added diff lines before sending gathered diff context. Treat this as best-effort defense-in-depth, not a guarantee; paid results expose affected paths in `meta.redacted_paths`.
 - Diff redaction only covers the context the server gathers. With `access=readonly`, Claude can `Read`/`Grep`/`Glob` any file in the workspace directly, so redaction does NOT protect against secrets it reads itself — use `access=toolless` (the default) when the workspace may contain secrets.
+- Free-form `prompt`/`context`/`target`/`evidence` text is capped before spend; split very large asks or use a narrower diff scope.
 - Default access is `toolless` (Claude gets no tools) and `config_mode=inherit`; both access modes are read-only (Claude never gets write/Bash). Use `config_mode=bare` only when you want a fully independent reviewer and have `ANTHROPIC_API_KEY` set.
 - When client MCP roots are available, explicit `workspace_root` values must be inside one of those roots; omit `workspace_root` to use the first root.
 - Cap cost/time with `max_budget_usd` and `timeout_seconds` for large reviews.

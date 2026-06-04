@@ -21,6 +21,12 @@ def test_meta_carries_cost_and_usage_fields():
     assert dumped["usage"]["input_tokens"] == 3
 
 
+def test_meta_carries_redacted_paths():
+    m = Meta(cwd="/x", config_mode="inherit", access="toolless",
+             timeout_seconds=10, elapsed_ms=1, redacted_paths=["app.py"])
+    assert m.model_dump(mode="json", exclude_none=True)["redacted_paths"] == ["app.py"]
+
+
 def test_finding_supports_line_range():
     from cc_plugin_codex.schemas import Finding
     f = Finding(severity="low", title="t", evidence="e", risk="r",
@@ -38,7 +44,7 @@ def test_success_result_has_next_steps():
 
 
 def test_fingerprint_value():
-    assert FINGERPRINT == "cc-plugin-codex/0.1/schema-9"
+    assert FINGERPRINT == "cc-plugin-codex/0.1/schema-10"
 
 
 def test_success_result_dump_omits_none():

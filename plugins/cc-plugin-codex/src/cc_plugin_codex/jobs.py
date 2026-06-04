@@ -175,6 +175,7 @@ class JobConfig:
     workspace_source: Optional[str]
     context_summary: Optional[ContextSummary]
     requested_max_budget_usd: Optional[float] = None
+    redacted_paths: Optional[list[str]] = None
 
 
 def start_job(cmd: list[str], cwd: str, cfg: JobConfig) -> tuple[str, str]:
@@ -209,6 +210,7 @@ def start_job(cmd: list[str], cwd: str, cfg: JobConfig) -> tuple[str, str]:
             "timeout_seconds": cfg.timeout_seconds,
             "workspace_source": cfg.workspace_source, "cwd": cwd,
             "requested_max_budget_usd": cfg.requested_max_budget_usd,
+            "redacted_paths": cfg.redacted_paths or [],
         },
         "context_summary": summary,
     }
@@ -319,6 +321,7 @@ def _build_meta(meta: dict, status: str) -> Meta:
         scope=c.get("scope"), base=c.get("base"),
         timeout_seconds=c.get("timeout_seconds", max_seconds()),
         requested_max_budget_usd=c.get("requested_max_budget_usd"),
+        redacted_paths=c.get("redacted_paths") or [],
         elapsed_ms=_elapsed_ms(meta),
         job_id=meta.get("job_id"),
     )

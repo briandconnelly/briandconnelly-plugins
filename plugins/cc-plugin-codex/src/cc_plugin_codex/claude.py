@@ -120,13 +120,11 @@ async def run_claude_async(cmd: list[str], cwd: str, timeout_seconds: int) -> Cl
 
 
 def classify_failure(run: ClaudeRun) -> ErrorInfo:
-    extra = ""
+    env = None
     try:
         env = json.loads(run.stdout)
-        extra = f"{env.get('subtype', '')} {env.get('result', '')}"
     except (json.JSONDecodeError, ValueError, TypeError):
         pass
-    blob = f"{extra}\n{run.stdout}\n{run.stderr}".lower()
     if run.stderr == "claude_not_found":
         return ErrorInfo(code="claude_not_found",
                          message="The `claude` CLI was not found on PATH.",
@@ -135,6 +133,39 @@ def classify_failure(run: ClaudeRun) -> ErrorInfo:
         return ErrorInfo(code="timeout", message="claude exceeded the timeout.",
                          repair="Narrow the scope/focus or raise timeout_seconds.",
                          retryable=True)
+    if isinstance(env, dict) and env.get("is_error"):
+        subtype = str(env.get("subtype") or "").lower()
+        result = str(env.get("result") or "")
+        structured_blob = f"{subtype}\n{result}".lower()
+        if "api_key" in structured_blob or "invalid api key" in structured_blob:
+            return ErrorInfo(code="api_key_invalid",
+                             message="ANTHROPIC_API_KEY is invalid.",
+                             repair="Set a valid ANTHROPIC_API_KEY, or use config_mode "
+                                    "inherit/scoped to use your existing login.")
+        if "auth" in structured_blob or "login" in structured_blob:
+            return ErrorInfo(code="claude_auth_required",
+                             message="claude is not authenticated.",
+                             repair="Run `claude /login`.")
+        if "budget" in structured_blob:
+            return ErrorInfo(code="budget_exceeded",
+                             message="claude reached the max-budget stop threshold "
+                                     "(a best-effort limit, not a hard cap).",
+                             repair="Raise max_budget_usd or reduce context.",
+                             retryable=True)
+        if "permission" in structured_blob or "denied" in structured_blob:
+            return ErrorInfo(code="claude_permission_error",
+                             message="claude was denied a requested permission.",
+                             repair="Use access=toolless, or allow the needed read-only tools.")
+        if "rate" in structured_blob or "overloaded" in structured_blob:
+            return ErrorInfo(code="nonzero_exit",
+                             message=f"claude reported a retryable error: {result[:200]}",
+                             repair="Retry later, or reduce request size.",
+                             retryable=True)
+
+    extra = ""
+    if isinstance(env, dict):
+        extra = f"{env.get('subtype', '')} {env.get('result', '')}"
+    blob = f"{extra}\n{run.stdout}\n{run.stderr}".lower()
     if "invalid api key" in blob:
         return ErrorInfo(code="api_key_invalid",
                          message="ANTHROPIC_API_KEY is invalid.",
