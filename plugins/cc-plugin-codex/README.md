@@ -11,7 +11,8 @@ tasks. Reviews can run synchronously or as background jobs, but Claude only ever
 An MCP server wraps the `claude` CLI and exposes read-only tools to Codex:
 `claude_ask`, `claude_review_changes`, `claude_adversarial_review`, and `claude_status`,
 plus `claude_review_changes_async` with `claude_job_status`/`claude_job_result`/
-`claude_job_cancel` for background reviews. Claude reviews; it never edits your code.
+`claude_job_consume_result`/`claude_job_cancel` for background reviews. Claude reviews;
+it never edits your code.
 
 Each tool publishes an output schema describing the `ok`-discriminated result
 (`{"ok": true, ...}` on success, `{"ok": false, "error": {code, message, repair}, ...}`
@@ -21,6 +22,9 @@ on failure). Failures also set the MCP `isError` flag, so branch on either `ok` 
 Invalid values for enum-typed parameters (`config_mode`, `access`, `scope`, `detail`)
 are rejected by the MCP framework as a schema validation error before the tool runs,
 rather than via the `ok:false` envelope; every other failure uses the envelope.
+The capability fingerprint changes whenever the agent-visible contract changes.
+Deprecated tools remain discoverable during their compatibility window, with their
+replacement named in the tool description and capability summary.
 
 The paid tools (`claude_ask`, `claude_review_changes`, `claude_adversarial_review`)
 **block synchronously** for up to `timeout_seconds` (default 180s, max 600s).
@@ -75,6 +79,9 @@ The diff-bearing tools operate on a workspace resolved in this order: an explici
 `workspace_root` argument, then the client's first MCP root, then the server's own
 working directory.
 `meta.workspace_source` reports which rule applied.
+When the client provides MCP roots, an explicit `workspace_root` must be contained
+inside one of those roots; otherwise the tool returns `workspace_outside_roots`.
+Clients that do not provide roots may still pass any existing absolute directory.
 Pass `workspace_root` explicitly when launching the server from a fixed directory (e.g. a
 plugin install) so reviews target your project rather than the plugin checkout.
 
@@ -97,17 +104,22 @@ plugin install) so reviews target your project rather than the plugin checkout.
 handle `{ok, job_id, status:"running", …}` immediately instead of blocking the Codex
 turn. Poll `claude_job_status(job_id)`, then call `claude_job_result(job_id)` once
 `result_available` is true — the result is the **same** `ok`/`verdict`/`findings`
-envelope the synchronous tool returns, with `meta.job_id` set. `claude_job_cancel`
-terminates a running job. The status/result/cancel tools are free.
+envelope the synchronous tool returns, with `meta.job_id` set. `claude_job_result`
+is read-only and leaves the stored record available until TTL cleanup. Use
+`claude_job_consume_result(job_id)` to fetch a finished result and delete the record.
+`claude_job_cancel` terminates a running job. The status/result/consume/cancel tools
+are free.
 
 The diff is gathered at launch (same secret redaction and `--max-budget-usd` cap as the
 sync path). Because the server drives one-shot `claude -p --output-format json`, a job's
 completion is simply "the process exited and wrote its JSON envelope" — no interactive
 log scraping. State lives on disk keyed by workspace, so status/result/cancel survive an
 MCP server restart. There is no daemon: overrunning jobs are stopped on the next status
-poll (deadline `CC_PLUGIN_CODEX_JOB_MAX_SECONDS`, default 1800s), records are cleaned up
-after `CC_PLUGIN_CODEX_JOB_TTL` (default 24h), and the budget cap bounds spend even for a
-job nobody polls. Job records (which contain the diff) are stored under
+poll (deadline `CC_PLUGIN_CODEX_JOB_MAX_SECONDS`, default 1800s). Job start/status
+responses include `poll_after_ms`, `ttl_seconds`, and `expires_at` where known.
+Records are cleaned up after `CC_PLUGIN_CODEX_JOB_TTL` (default 24h), and the budget
+cap bounds spend even for a job nobody polls. Job records (which contain the diff)
+are stored under
 `CC_PLUGIN_CODEX_STATE_DIR` (default `~/.cache/cc-plugin-codex/jobs`); anyone with access
 to that workspace's state directory can read or cancel its jobs.
 

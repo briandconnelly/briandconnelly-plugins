@@ -78,7 +78,7 @@ def test_classify_not_logged_in():
 def test_classify_invalid_api_key():
     run = ClaudeRun(stdout="", stderr="Invalid API key · Fix external API key",
                     exit_code=1, elapsed_ms=5, timed_out=False)
-    assert classify_failure(run).code == "api_key_required"
+    assert classify_failure(run).code == "api_key_invalid"
 
 
 def test_classify_timeout():

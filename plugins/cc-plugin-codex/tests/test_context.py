@@ -38,6 +38,8 @@ def test_size_cap_truncates(git_repo, monkeypatch):
     res = gather_context(str(git_repo), scope="working_tree", base="main")
     assert res.truncated is True
     assert res.truncation_hint
+    assert "scope=staged" in res.truncation_hint
+    assert "review specific files" not in res.truncation_hint
 
 
 def test_stage_env_file_redacted(git_repo):

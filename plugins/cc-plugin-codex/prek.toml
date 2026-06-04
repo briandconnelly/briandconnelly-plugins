@@ -1,0 +1,31 @@
+# Configuration file for `prek`, a git hook framework written in Rust.
+#:schema https://www.schemastore.org/prek.json
+
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "check-json", files = '^plugins/cc-plugin-codex/' },
+  { id = "end-of-file-fixer", files = '^plugins/cc-plugin-codex/' },
+  { id = "trailing-whitespace", files = '^plugins/cc-plugin-codex/' },
+]
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "ruff-check"
+name = "ruff check"
+entry = "uv"
+args = ["--directory", "plugins/cc-plugin-codex", "run", "ruff", "check", "."]
+language = "system"
+pass_filenames = false
+always_run = true
+
+[[repos.hooks]]
+id = "pytest"
+name = "pytest"
+entry = "uv"
+args = ["--directory", "plugins/cc-plugin-codex", "run", "pytest"]
+language = "system"
+pass_filenames = false
+always_run = true

@@ -108,7 +108,7 @@ def gather_context(cwd: str, scope: str, base: str) -> ContextResult:
     if len(encoded) > MAX_DIFF_BYTES:
         text = encoded[:MAX_DIFF_BYTES].decode("utf-8", "ignore")
         truncated = True
-        hint = (f"diff exceeded {MAX_DIFF_BYTES} bytes; narrow with a smaller "
-                f"scope or review specific files")
+        hint = (f"diff exceeded {MAX_DIFF_BYTES} bytes; use scope=staged, choose "
+                "a closer branch base, or call claude_ask with selected context")
     return ContextResult(text=text, summary=summary, truncated=truncated,
                          truncation_hint=hint, redacted_paths=redacted)

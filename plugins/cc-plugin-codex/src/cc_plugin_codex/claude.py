@@ -131,7 +131,7 @@ def classify_failure(run: ClaudeRun) -> ErrorInfo:
                          repair="Narrow the scope/focus or raise timeout_seconds.",
                          retryable=True)
     if "invalid api key" in blob:
-        return ErrorInfo(code="api_key_required",
+        return ErrorInfo(code="api_key_invalid",
                          message="ANTHROPIC_API_KEY is invalid.",
                          repair="Set a valid ANTHROPIC_API_KEY, or use config_mode "
                                 "inherit/scoped to use your existing login.")
