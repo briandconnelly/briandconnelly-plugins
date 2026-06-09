@@ -1,0 +1,24 @@
+{
+  "name": "presence-detector",
+  "version": "0.1.0",
+  "description": "Skill for detecting whether the user is present at or away from their macOS machine",
+  "author": {
+    "name": "Brian Connelly",
+    "url": "https://github.com/briandconnelly"
+  },
+  "repository": "https://github.com/briandconnelly/briandconnelly-plugins",
+  "license": "MIT",
+  "keywords": ["presence", "idle", "focus", "macos", "automation"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Presence Detector",
+    "shortDescription": "Detect whether the user is at their macOS machine.",
+    "longDescription": "Presence Detector provides a skill that combines screen lock, screensaver, input idle time, and Focus mode into a single present/away verdict for macOS, suitable for presence-gating automations.",
+    "developerName": "Brian Connelly",
+    "category": "Utilities",
+    "capabilities": ["Skills"],
+    "defaultPrompt": [
+      "Am I currently at my machine?"
+    ]
+  }
+}
