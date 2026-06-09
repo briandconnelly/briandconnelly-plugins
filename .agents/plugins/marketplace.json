@@ -53,6 +53,18 @@
       "category": "Utilities"
     },
     {
+      "name": "presence-detector",
+      "source": {
+        "source": "local",
+        "path": "./plugins/presence-detector"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Utilities"
+    },
+    {
       "name": "tempest",
       "source": {
         "source": "local",

@@ -32,6 +32,12 @@
       "category": "utilities"
     },
     {
+      "name": "presence-detector",
+      "source": "./plugins/presence-detector",
+      "description": "Skill for detecting whether the user is present at or away from their macOS machine",
+      "category": "utilities"
+    },
+    {
       "name": "tempest",
       "source": "./plugins/tempest",
       "description": "MCP server for accessing WeatherFlow Tempest personal weather station data",

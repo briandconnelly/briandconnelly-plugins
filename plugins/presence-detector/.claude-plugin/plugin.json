@@ -1,0 +1,11 @@
+{
+  "name": "presence-detector",
+  "description": "Skill for detecting whether the user is present at or away from their macOS machine",
+  "version": "0.1.0",
+  "author": {
+    "name": "Brian Connelly"
+  },
+  "repository": "https://github.com/briandconnelly/briandconnelly-plugins",
+  "license": "MIT",
+  "keywords": ["presence", "idle", "focus", "macos", "automation"]
+}
