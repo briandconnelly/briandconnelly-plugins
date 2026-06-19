@@ -8,6 +8,15 @@
   },
   "plugins": [
     {
+      "name": "codex-in-claude",
+      "source": {
+        "source": "github",
+        "repo": "briandconnelly/codex-in-claude"
+      },
+      "description": "MCP server for calling OpenAI Codex from Claude Code for second opinions, code review, and delegated coding tasks",
+      "category": "utilities"
+    },
+    {
       "name": "cwms",
       "source": "./plugins/cwms",
       "description": "MCP server for querying U.S. Army Corps of Engineers water data via the CWMS Data API",
