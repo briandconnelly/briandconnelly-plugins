@@ -24,6 +24,7 @@ In Codex, install plugins from the `briandconnelly-plugins` marketplace after ad
 | **Plugin** | **Description** |
 | --- | --- |
 | [cc-plugin-codex](plugins/cc-plugin-codex/) | (Codex only) Call Claude Code from Codex for bounded, independent code review and second opinions |
+| [codex-in-claude](https://github.com/briandconnelly/codex-in-claude) | MCP server for calling OpenAI Codex from Claude Code for second opinions, code review, and delegated coding tasks |
 | [cwms](plugins/cwms/) | MCP server for querying U.S. Army Corps of Engineers water data via the CWMS Data API |
 | [ipinfo](plugins/ipinfo/) | MCP server for getting IP address details, location, and network information via ipinfo.io |
 | [orb-cloud](plugins/orb-cloud/) | MCP server for managing Orb Cloud organizations and devices |
