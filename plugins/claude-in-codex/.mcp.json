@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "claude-in-codex": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "claude-in-codex==0.6.0",
+        "claude-in-codex-mcp"
+      ],
+      "env_vars": [
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_IN_CODEX_ACCESS",
+        "CLAUDE_IN_CODEX_CLAUDE_CONFIG",
+        "CLAUDE_IN_CODEX_EFFORT",
+        "CLAUDE_IN_CODEX_GIT_TIMEOUT_SECONDS",
+        "CLAUDE_IN_CODEX_JOB_MAX_COUNT",
+        "CLAUDE_IN_CODEX_JOB_MAX_SECONDS",
+        "CLAUDE_IN_CODEX_JOB_TTL",
+        "CLAUDE_IN_CODEX_MAX_BUDGET_USD",
+        "CLAUDE_IN_CODEX_MAX_INPUT_BYTES",
+        "CLAUDE_IN_CODEX_MODEL",
+        "CLAUDE_IN_CODEX_STATE_DIR",
+        "CLAUDE_IN_CODEX_SUPPORTED_MAJORS",
+        "CLAUDE_IN_CODEX_TIMEOUT_SECONDS"
+      ]
+    }
+  }
+}
