@@ -1,0 +1,36 @@
+{
+  "name": "hermes-tweet",
+  "version": "0.1.6",
+  "description": "Native Hermes Agent X/Twitter plugin guidance for Xquik reads and approval-gated actions",
+  "author": {
+    "name": "Xquik",
+    "url": "https://github.com/Xquik-dev"
+  },
+  "repository": "https://github.com/Xquik-dev/hermes-tweet",
+  "license": "MIT",
+  "keywords": [
+    "hermes-agent",
+    "hermes-plugin",
+    "xquik",
+    "twitter",
+    "x",
+    "social-media",
+    "automation"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Hermes Tweet",
+    "shortDescription": "Use Hermes Agent for X/Twitter reads and gated actions.",
+    "longDescription": "Hermes Tweet helps agents install, configure, and operate the native Hermes Agent X/Twitter plugin. Use it to route X/Twitter research, public reads, and user-approved account actions through Hermes Tweet while keeping credentials in the Hermes runtime environment.",
+    "developerName": "Xquik",
+    "category": "Utilities",
+    "capabilities": [
+      "Skills"
+    ],
+    "defaultPrompt": [
+      "Use Hermes Tweet to plan a Hermes Agent X/Twitter research workflow.",
+      "Use Hermes Tweet to troubleshoot plugin installation and tool gating.",
+      "Use Hermes Tweet to prepare an approval-gated X/Twitter action."
+    ]
+  }
+}

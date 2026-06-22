@@ -23,6 +23,12 @@
       "category": "utilities"
     },
     {
+      "name": "hermes-tweet",
+      "source": "./plugins/hermes-tweet",
+      "description": "Native Hermes Agent X/Twitter plugin guidance for Xquik reads and approval-gated actions",
+      "category": "utilities"
+    },
+    {
       "name": "ipinfo",
       "source": "./plugins/ipinfo",
       "description": "MCP server for getting IP address details, location, and network information via ipinfo.io",
