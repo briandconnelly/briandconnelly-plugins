@@ -152,7 +152,10 @@ When conditions are relevant, include gardening advice:
 
 - **Frost risk**: Flag when overnight lows are forecast at or below 2°C (36°F). Advise covering or bringing in sensitive plants.
 - **Watering guidance**: If measurable precipitation fell in the last 24 hours (`precip_accum_local_day` or `precip_accum_local_yesterday_final`) or rain is forecast at 50%+ probability in the next 24 hours, suggest skipping manual watering.
-- **Spray safety**: Delta-T between 2–8°C and wind below 10 mph are ideal for pesticide/herbicide application. Below 2°C: droplets won't evaporate properly. Above 10°C: too much evaporation and drift risk.
+- **Spray safety**: Delta-T between 2–8°C and wind below 10 mph are ideal for pesticide/herbicide application.
+  Below 2°C: droplets won't evaporate properly.
+  8–10°C: marginal — evaporation losses increase, so prefer the cooler parts of the day.
+  Above 10°C: too much evaporation and drift risk.
 - **UV stress**: UV index 6+ is strong enough to stress transplants and light-skinned fruit.
 
 ## Lightning Risk Assessment
@@ -161,8 +164,10 @@ Use `lightning_strike_count`, `lightning_strike_count_last_1hr`, `lightning_stri
 
 - **No risk**: Zero strikes in the last 3 hours.
 - **Distant activity**: Strikes detected but >30 km away. Worth monitoring.
-- **Approaching threat**: Strikes within 15–30 km, especially if count is increasing or distance decreasing. Advise caution outdoors.
-- **Immediate danger**: Strikes within 15 km. Advise seeking shelter immediately — avoid open areas, water, tall isolated objects, and metal structures.
+- **Approaching threat**: Strikes 15–30 km away, especially if count is increasing or distance decreasing.
+  Advise caution outdoors.
+- **Immediate danger**: Strikes closer than 15 km.
+  Advise seeking shelter immediately — avoid open areas, water, tall isolated objects, and metal structures.
 
 Check `lightning_strike_last_epoch` against the current time. Strikes more than a few hours old are historical. Use 1-hour and 3-hour counts to judge whether activity is ongoing.
 
@@ -194,7 +199,7 @@ Useful for outdoor projects, trail conditions, or post-rain timing:
 `air_density` in kg/m³; sea-level standard is ~1.225 kg/m³:
 
 - **Below 1.15 kg/m³**: Thin air — reduced engine performance, less drone lift, balls travel farther.
-- **1.15–1.25 kg/m³**: Normal range.
+- **1.15–1.30 kg/m³**: Normal range.
 - **Above 1.30 kg/m³**: Dense air — better engine performance, more drone lift, balls travel shorter.
 
 Mention air density only when the user asks about sports performance, drone flying, or engine/vehicle performance, or when the value is notably outside normal range.
