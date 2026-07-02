@@ -89,7 +89,8 @@ When producing a general briefing or when no specific question is asked:
 
 ## Alerts & Anomalies
 
-Proactively flag these when present in the data:
+Scan only the data already retrieved for the question — do not fetch additional data solely to look for anomalies.
+Proactively flag these when present:
 
 - Rapid barometric pressure drops (potential storm approaching)
 - Lightning activity or strikes detected
