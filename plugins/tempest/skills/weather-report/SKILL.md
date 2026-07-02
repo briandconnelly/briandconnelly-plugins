@@ -42,7 +42,8 @@ Use WebSearch only to supplement station data with seasonal norms, historical re
 
 3. **Check data quality before answering** (see Data Quality below).
 
-4. **Classify the question and apply the appropriate section below** — most questions fit one or two sections. Don't run all analyses for every question.
+4. **Classify the question and apply the appropriate section below** — most questions fit one or two sections.
+   Don't run all analyses for every question.
 
 5. **Respond** in plain language, using the station's configured units.
    If the user requests a different unit system, convert before responding.
@@ -57,8 +58,11 @@ Before interpreting sensor values, check:
   `ts_retrieved` may be omitted on some cache hits, so fall back to the observation timestamp when it is absent.
   The `cache` field tells you the source: `miss` means freshly fetched, while `memory` or `disk` means it was served from cache and may be older.
   If the effective data is more than 10 minutes old, note this before answering.
-- **Missing or null fields**: Concise (default) responses omit null-valued optional fields, so an absent field is not an error. Some metrics (WBGT, delta-T, air density) are only computed under certain conditions. If a metric you need is missing, re-fetch with `detailed=true`; if it is still null, skip it rather than reporting "null."
-- **Implausible values**: A temperature of −50°C or UV of 30 likely indicates a sensor fault. Note the anomaly rather than interpreting the value literally.
+- **Missing or null fields**: Concise (default) responses omit null-valued optional fields, so an absent field is not an error.
+  Some metrics (WBGT, delta-T, air density) are only computed under certain conditions.
+  If a metric you need is missing, re-fetch with `detailed=true`; if it is still null, skip it rather than reporting "null."
+- **Implausible values**: A temperature of −50°C or UV of 30 likely indicates a sensor fault.
+  Note the anomaly rather than interpreting the value literally.
 - **Forecast vs. observation disagreement**: If current conditions and the forecast's current snapshot differ substantially, prefer the observation and note the discrepancy.
 
 ## Handling Tool Errors
@@ -67,11 +71,16 @@ When a tool call fails, the server returns a flat JSON error object instead of w
 Translate it into plain language for the user — never surface the raw JSON.
 Act on the `code`:
 
-- `auth_missing`, `auth_invalid`, `auth_forbidden`: the `WEATHERFLOW_API_TOKEN` is missing, wrong, or lacks access. Not retryable — tell the user to check their token configuration.
-- `invalid_argument`: a malformed argument was sent. The payload's `field` and `value` identify it; correct the call and retry.
-- `station_not_found`: the station id is unknown. Re-resolve with `tempest_get_stations` rather than retrying the same id.
-- `rate_limited`, `upstream_unavailable`: `temporary` is true. Back off briefly (honor `retry_after_ms` if present), retry once, and if it still fails tell the user the service is briefly unavailable and to try again shortly.
-- `upstream_invalid_response`, `internal_error`: not retryable. Report that the data couldn't be retrieved, and include the `request_id` if the user wants to follow up.
+- `auth_missing`, `auth_invalid`, `auth_forbidden`: the `WEATHERFLOW_API_TOKEN` is missing, wrong, or lacks access.
+  Not retryable — tell the user to check their token configuration.
+- `invalid_argument`: a malformed argument was sent.
+  The payload's `field` and `value` identify it; correct the call and retry.
+- `station_not_found`: the station id is unknown.
+  Re-resolve with `tempest_get_stations` rather than retrying the same id.
+- `rate_limited`, `upstream_unavailable`: `temporary` is true.
+  Back off briefly (honor `retry_after_ms` if present), retry once, and if it still fails tell the user the service is briefly unavailable and to try again shortly.
+- `upstream_invalid_response`, `internal_error`: not retryable.
+  Report that the data couldn't be retrieved, and include the `request_id` if the user wants to follow up.
 
 ## Server Capabilities
 
@@ -124,7 +133,8 @@ The station reports `feels_like`, `wind_chill`, and `heat_index`. Choose the rig
 
 - **Wind chill** is meaningful only when temperature is below 10°C (50°F) and wind is above 3 mph. Otherwise it equals air temperature.
 - **Heat index** is meaningful only when temperature is above 27°C (80°F) and humidity is above 40%. Otherwise it equals air temperature.
-- When neither applies, report the actual temperature. Do not call out "feels like" as a separate value.
+- When neither applies, report the actual temperature.
+  Do not call out "feels like" as a separate value.
 
 Only call out feels-like when it meaningfully differs from actual air temperature (at least 2°C / 4°F).
 
@@ -169,7 +179,9 @@ Use `lightning_strike_count`, `lightning_strike_count_last_1hr`, `lightning_stri
 - **Immediate danger**: Strikes closer than 15 km.
   Advise seeking shelter immediately — avoid open areas, water, tall isolated objects, and metal structures.
 
-Check `lightning_strike_last_epoch` against the current time. Strikes more than a few hours old are historical. Use 1-hour and 3-hour counts to judge whether activity is ongoing.
+Check `lightning_strike_last_epoch` against the current time.
+Strikes more than a few hours old are historical.
+Use 1-hour and 3-hour counts to judge whether activity is ongoing.
 
 When lightning is detected, flag it proactively even if the user didn't ask.
 
@@ -190,9 +202,12 @@ Mention inferred precipitation type only when precipitation is occurring and the
 Combine delta-T, wind, and solar radiation to assess surface drying time.
 Useful for outdoor projects, trail conditions, or post-rain timing:
 
-- **Fast drying**: Delta-T above 6°C, wind above 10 mph, solar radiation above 400 W/m². Surfaces dry within a few hours.
-- **Moderate drying**: Delta-T 3–6°C, light wind, or moderate solar. Allow half a day or more.
-- **Slow drying**: Delta-T below 3°C, calm wind, overcast (solar below 200 W/m²). Surfaces may stay wet all day; trails will be muddy.
+- **Fast drying**: Delta-T above 6°C, wind above 10 mph, solar radiation above 400 W/m².
+  Surfaces dry within a few hours.
+- **Moderate drying**: Delta-T 3–6°C, light wind, or moderate solar.
+  Allow half a day or more.
+- **Slow drying**: Delta-T below 3°C, calm wind, overcast (solar below 200 W/m²).
+  Surfaces may stay wet all day; trails will be muddy.
 
 ## Air Density & Performance
 
