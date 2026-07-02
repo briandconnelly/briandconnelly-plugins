@@ -54,7 +54,7 @@ Use WebSearch only to supplement station data with seasonal norms, historical re
 These apply to every response, whichever analysis sections you used:
 
 - Respond in plain language.
-  Translate raw fields into described values (e.g. `wind_avg: 3.6` → "light breeze at 8 mph"), not raw numbers alone.
+  Translate raw fields into described values in the station's configured units (e.g. `wind_avg: 3.6` → "light breeze at 8 mph" on a station configured for mph), not raw numbers alone.
 - Use the station's configured units.
   If the user requests a different unit system, convert before responding.
 - For casual questions like "do I need a jacket?" or "is it good for a run?", give a direct, conversational answer first, back it up with the relevant data points, and add practical advice when it changes what the user should do (gear, timing, route).
@@ -66,7 +66,7 @@ Before interpreting sensor values, check:
 - **Stale data**: **If the effective data is more than 10 minutes old, say so before answering.**
   To find the effective age, prefer `ts_retrieved` in `_meta["net.bconnelly.tempest/fetch"]` (RFC 3339 UTC — when the data was actually fetched upstream) over the observation's own timestamp.
   `ts_retrieved` may be omitted on some cache hits, so fall back to the observation timestamp when it is absent.
-  The `cache` field in the same `_meta` block tells you the source: `miss` means freshly fetched, while `memory` or `disk` means it was served from cache and may be older.
+  `_meta["net.bconnelly.tempest/fetch"].cache` tells you the source: `miss` means freshly fetched, while `memory` or `disk` means it was served from cache and may be older.
 - **Missing or null fields**: Concise (default) responses omit null-valued optional fields, so an absent field is not an error.
   Some metrics (WBGT, delta-T, air density) are only computed under certain conditions.
   If a metric you need is missing, re-fetch with `detailed=true`; if it is still null, skip it rather than reporting "null."
@@ -110,7 +110,7 @@ When producing a general briefing or when no specific question is asked:
 Scan only the data already retrieved for the question — do not fetch additional data solely to look for anomalies.
 Proactively flag these when present:
 
-- Barometric pressure trending falling or rising (potential storm approaching)
+- Barometric pressure trending falling (potential storm approaching) or rising (clearing likely)
 - Lightning activity or strikes detected
 - High UV index (6+)
 - Extreme temperatures for the season (use WebSearch to retrieve local historical norms if needed to confirm the deviation is significant)
