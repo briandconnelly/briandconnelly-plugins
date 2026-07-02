@@ -57,7 +57,7 @@ These apply to every response, whichever analysis sections you used:
 
 Before interpreting sensor values, check:
 
-- **Stale data**: **If the effective data is more than 10 minutes old, say so before answering.** To find the effective age, prefer `_meta["net.bconnelly.tempest/fetch"].ts_retrieved` (RFC 3339 UTC — when the data was actually fetched upstream) over the observation's own timestamp; it may be omitted on some cache hits, so fall back to the observation timestamp when absent. The same object's `cache` field tells you the source: `miss` means freshly fetched, while `memory` or `disk` means it was served from cache and may be older.
+- **Stale data**: **If the effective data is more than 10 minutes old, say so before answering.** To find the effective age, prefer `_meta["net.bconnelly.tempest/fetch"].ts_retrieved` (RFC 3339 UTC — when the data was actually fetched upstream) over the observation's own timestamp; it may be omitted on some cache hits, so fall back to the observation timestamp when absent. The `_meta["net.bconnelly.tempest/fetch"].cache` field tells you the source: `miss` means freshly fetched, while `memory` or `disk` means it was served from cache and may be older.
 - **Missing or null fields**: Concise (default) responses omit null-valued optional fields, so an absent field is not an error. Some metrics (WBGT, delta-T, air density) are only computed under certain conditions. If a metric you need is missing, re-fetch with `detailed=true`; if it is still null, skip it rather than reporting "null."
 - **Implausible values**: A temperature of −50°C or UV of 30 likely indicates a sensor fault. Note the anomaly rather than interpreting the value literally.
 - **Forecast vs. observation disagreement**: If current conditions and the forecast's current snapshot differ substantially, prefer the observation and note the discrepancy.
@@ -92,7 +92,7 @@ When producing a general briefing or when no specific question is asked:
 
 Proactively flag these when present in the data:
 
-- Rapid barometric pressure drops (potential storm approaching)
+- Barometric pressure trending falling or rising, especially rapid drops (potential storm approaching)
 - Lightning activity or strikes detected
 - High UV index (6+)
 - Extreme temperatures for the season (use WebSearch to retrieve local historical norms if needed to confirm the deviation is significant)
