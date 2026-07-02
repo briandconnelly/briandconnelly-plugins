@@ -38,7 +38,8 @@ Use WebSearch only to supplement station data with seasonal norms, historical re
      When `hours` / `days` are omitted, the response defaults to 6 hourly and 2 daily entries.
      Use `detailed=true` only when you need full field density (it also returns every available entry when `hours` / `days` are omitted), not as the way to get more entries.
      Check the response's `truncated` flag and `truncation_hint` (alongside `requested_*` / `returned_*`) to detect an upstream shortfall before telling the user a range is complete.
-   - Derived/comfort metrics (WBGT, delta-T, wet bulb, heat index, air density, feels-like) → pass `detailed=true` to `tempest_get_observation` or `tempest_get_forecast` (only those two accept the parameter). Concise (default) responses omit null-valued fields to save tokens, so these metrics are often absent unless you request detail.
+   - Derived/comfort metrics (WBGT, delta-T, wet bulb, heat index, air density, feels-like) → pass `detailed=true` to `tempest_get_observation` or `tempest_get_forecast` (only those two accept the parameter).
+     Concise (default) responses omit null-valued fields to save tokens, so these metrics are often absent unless you request detail.
 
 3. **Check data quality before answering** (see Data Quality below).
 
@@ -129,7 +130,8 @@ Interpret derived comfort metrics rather than listing raw numbers:
 
 ## Feels Like Temperature
 
-The station reports `feels_like`, `wind_chill`, and `heat_index`. Choose the right metric:
+The station reports `feels_like`, `wind_chill`, and `heat_index`.
+Choose the right metric:
 
 - **Wind chill** is meaningful only when temperature is below 10°C (50°F) and wind is above 3 mph. Otherwise it equals air temperature.
 - **Heat index** is meaningful only when temperature is above 27°C (80°F) and humidity is above 40%. Otherwise it equals air temperature.
@@ -160,7 +162,8 @@ When the trend is "falling" or "rising", call it out proactively.
 
 Include the guidance below when the user asks about gardening, plants, or yard work, or when a briefing surfaces frost risk, spray-relevant conditions, or significant recent or forecast rain:
 
-- **Frost risk**: Flag when overnight lows are forecast at or below 2°C (36°F). Advise covering or bringing in sensitive plants.
+- **Frost risk**: Flag when overnight lows are forecast at or below 2°C (36°F).
+  Advise covering or bringing in sensitive plants.
 - **Watering guidance**: If measurable precipitation fell in the last 24 hours (`precip_accum_local_day` or `precip_accum_local_yesterday_final`) or rain is forecast at 50%+ probability in the next 24 hours, suggest skipping manual watering.
 - **Spray safety**: Delta-T between 2–8°C and wind below 10 mph are ideal for pesticide/herbicide application.
   Below 2°C: droplets won't evaporate properly.
@@ -173,7 +176,8 @@ Include the guidance below when the user asks about gardening, plants, or yard w
 Use `lightning_strike_count`, `lightning_strike_count_last_1hr`, `lightning_strike_count_last_3hr`, `lightning_strike_last_distance`, and `lightning_strike_last_epoch`:
 
 - **No risk**: Zero strikes in the last 3 hours.
-- **Distant activity**: Strikes detected but >30 km away. Worth monitoring.
+- **Distant activity**: Strikes detected but >30 km away.
+  Worth monitoring.
 - **Approaching threat**: Strikes 15–30 km away, especially if count is increasing or distance decreasing.
   Advise caution outdoors.
 - **Immediate danger**: Strikes closer than 15 km.
@@ -187,7 +191,8 @@ When lightning is detected, flag it proactively even if the user didn't ask.
 
 ## Precipitation Type Inference
 
-The station reports precipitation rate but not type. Infer from wet bulb temperature.
+The station reports precipitation rate but not type.
+Infer from wet bulb temperature.
 These thresholds are estimates; vertical temperature structure and local elevation can shift the boundaries.
 
 - **Wet bulb below −1°C (30°F)**: Almost certainly snow.
