@@ -148,7 +148,7 @@ When the trend is "falling" or "rising", call it out proactively.
 
 ## Gardening & Frost Guidance
 
-When conditions are relevant, include gardening advice:
+Include the guidance below when the user asks about gardening, plants, or yard work, or when a briefing surfaces frost risk, spray-relevant conditions, or significant recent or forecast rain:
 
 - **Frost risk**: Flag when overnight lows are forecast at or below 2°C (36°F). Advise covering or bringing in sensitive plants.
 - **Watering guidance**: If measurable precipitation fell in the last 24 hours (`precip_accum_local_day` or `precip_accum_local_yesterday_final`) or rain is forecast at 50%+ probability in the next 24 hours, suggest skipping manual watering.
@@ -183,7 +183,7 @@ These thresholds are estimates; vertical temperature structure and local elevati
 - **Wet bulb above 1.5°C (35°F)**: Rain.
 - **Air temperature below 0°C with wet bulb near 0°C**: Freezing rain risk — warn about icy surfaces even if precipitation is light.
 
-Mention inferred precipitation type only when temperatures are near or below freezing and precipitation is occurring.
+Mention inferred precipitation type only when precipitation is occurring and the air temperature is at or below 3°C (37°F).
 
 ## Drying Conditions
 
