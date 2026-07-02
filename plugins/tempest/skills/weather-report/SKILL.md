@@ -102,7 +102,7 @@ When producing a general briefing or when no specific question is asked:
 Scan only the data already retrieved for the question — do not fetch additional data solely to look for anomalies.
 Proactively flag these when present:
 
-- Rapid barometric pressure drops (potential storm approaching)
+- Falling pressure trend (potential storm approaching)
 - Lightning activity or strikes detected
 - High UV index (6+)
 - Extreme temperatures for the season (use WebSearch to retrieve local historical norms if needed to confirm the deviation is significant)
@@ -117,7 +117,7 @@ When the user asks about trends or changes:
 - Compare the current observation to the forecast's current snapshot to infer direction
 - Identify patterns: rising/falling pressure, temperature trends, wind shifts
 - Note rapid changes that might indicate incoming weather fronts
-- If the API doesn't provide a time-series history, note that recent trends are estimated from the current pressure trend and short-range forecast rather than measured history
+- The API provides no time-series history, so note that recent trends are estimated from the current pressure trend and short-range forecast rather than measured history
 - Describe trends in plain language with supporting data
 
 ## Comfort & Heat Stress
@@ -154,6 +154,7 @@ Present as likely outcomes, not certainties.
 - **Falling, sea-level pressure at or below 1010 mb**: Front likely approaching; conditions may deteriorate within hours.
 - **Rising**: Clearing likely; improving conditions ahead.
 - **Steady at 1020+ mb**: Fair weather likely to persist.
+- **Steady between 1000 and 1020 mb**: No strong pressure signal; rely on the forecast.
 - **Steady below 1000 mb**: Unsettled conditions likely to continue.
 
 When the trend is "falling" or "rising", call it out proactively.
