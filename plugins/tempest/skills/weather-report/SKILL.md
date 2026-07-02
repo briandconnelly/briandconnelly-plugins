@@ -52,7 +52,11 @@ Use WebSearch only to supplement station data with seasonal norms, historical re
 
 Before interpreting sensor values, check:
 
-- **Stale data**: Prefer `_meta.ts_retrieved` (RFC 3339 UTC — when the data was actually fetched upstream) over the observation's own timestamp. It may be omitted on some cache hits, so fall back to the observation timestamp when it is absent. `_meta.cache` tells you the source: `miss` means freshly fetched, while `memory` or `disk` means it was served from cache and may be older. If the effective data is more than 10 minutes old, note this before answering.
+- **Stale data**: Cache provenance lives in `_meta["net.bconnelly.tempest/fetch"]` as `{cache, fingerprint, ts_retrieved}`.
+  Prefer its `ts_retrieved` (RFC 3339 UTC — when the data was actually fetched upstream) over the observation's own timestamp.
+  `ts_retrieved` may be omitted on some cache hits, so fall back to the observation timestamp when it is absent.
+  The `cache` field tells you the source: `miss` means freshly fetched, while `memory` or `disk` means it was served from cache and may be older.
+  If the effective data is more than 10 minutes old, note this before answering.
 - **Missing or null fields**: Concise (default) responses omit null-valued optional fields, so an absent field is not an error. Some metrics (WBGT, delta-T, air density) are only computed under certain conditions. If a metric you need is missing, re-fetch with `detailed=true`; if it is still null, skip it rather than reporting "null."
 - **Implausible values**: A temperature of −50°C or UV of 30 likely indicates a sensor fault. Note the anomaly rather than interpreting the value literally.
 - **Forecast vs. observation disagreement**: If current conditions and the forecast's current snapshot differ substantially, prefer the observation and note the discrepancy.
@@ -71,7 +75,7 @@ Act on the `code`:
 
 ## Server Capabilities
 
-The server exposes a machine-readable `tempest://capabilities` resource (read it with the MCP resource tool) summarizing the available tools, error codes, station scope, and a surface `fingerprint` — the same value that appears in every result's `_meta.fingerprint`.
+The server exposes a machine-readable `tempest://capabilities` resource (read it with the MCP resource tool) summarizing the available tools, error codes, station scope, and a surface `fingerprint` — the same value that appears in every result's `_meta["net.bconnelly.tempest/fetch"].fingerprint`.
 You normally don't need it, but consult it if a tool's name or behavior seems to disagree with these instructions, which usually means the server was upgraded.
 
 ## Weather Briefing
