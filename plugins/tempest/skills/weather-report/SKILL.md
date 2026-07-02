@@ -17,6 +17,7 @@ allowed-tools:
   - mcp__plugin_tempest_mcp-server-tempest__tempest_get_observation
   - mcp__plugin_tempest_mcp-server-tempest__tempest_get_forecast
   - mcp__plugin_tempest_mcp-server-tempest__tempest_get_station_details
+  - mcp__plugin_tempest_mcp-server-tempest__tempest_get_capabilities
   - ReadMcpResourceTool
   - WebSearch
 ---
@@ -35,20 +36,28 @@ Use WebSearch only to supplement station data with seasonal norms, historical re
 
 2. **Fetch only what the question requires**:
    - Current conditions only → `tempest_get_observation` alone is sufficient.
-   - Forecast or trend questions → also call `tempest_get_forecast`. Use `hours` and `days` to set depth, but note that summary (default) mode silently caps output at 6 hourly and 2 daily entries; pass `detailed=true` to lift the cap. Check the response's `truncated` flag and `truncation_hint` (alongside `requested_*` / `returned_*`) to detect clipping before telling the user a range is complete.
+   - Forecast or trend questions → also call `tempest_get_forecast`. Use `hours` and `days` to set depth. Summary (default) mode caps output at 6 hourly and 2 daily entries; pass `detailed=true` to lift the cap.
+     - **Before telling the user a range is complete, check the response's `truncated` flag and `truncation_hint`** (alongside `requested_*` / `returned_*`) to detect clipping.
    - Derived/comfort metrics (WBGT, delta-T, wet bulb, heat index, air density, feels-like) → pass `detailed=true` to `tempest_get_observation` or `tempest_get_forecast` (only those two accept the parameter). Concise (default) responses omit null-valued fields to save tokens, so these metrics are often absent unless you request detail.
 
 3. **Check data quality before answering** (see Data Quality below).
 
 4. **Classify the question and apply the appropriate section below** — most questions fit one or two sections. Don't run all analyses for every question.
 
-5. **Respond** in plain language, using the station's configured units. If the user requests a different unit system, convert before responding.
+5. **Respond** following the Output rules below.
+
+## Output
+
+These apply to every response, whichever analysis sections you used:
+
+- Respond in plain language. Translate raw fields into described values (e.g. `wind_avg: 3.6` → "light breeze at 8 mph"), not raw numbers alone.
+- Use the station's configured units. If the user requests a different unit system, convert before responding.
 
 ## Data Quality
 
 Before interpreting sensor values, check:
 
-- **Stale data**: Prefer `_meta.ts_retrieved` (RFC 3339 UTC — when the data was actually fetched upstream) over the observation's own timestamp. It may be omitted on some cache hits, so fall back to the observation timestamp when it is absent. `_meta.cache` tells you the source: `miss` means freshly fetched, while `memory` or `disk` means it was served from cache and may be older. If the effective data is more than 10 minutes old, note this before answering.
+- **Stale data**: **If the effective data is more than 10 minutes old, say so before answering.** To find the effective age, prefer `_meta["net.bconnelly.tempest/fetch"].ts_retrieved` (RFC 3339 UTC — when the data was actually fetched upstream) over the observation's own timestamp; it may be omitted on some cache hits, so fall back to the observation timestamp when absent. The same object's `cache` field tells you the source: `miss` means freshly fetched, while `memory` or `disk` means it was served from cache and may be older.
 - **Missing or null fields**: Concise (default) responses omit null-valued optional fields, so an absent field is not an error. Some metrics (WBGT, delta-T, air density) are only computed under certain conditions. If a metric you need is missing, re-fetch with `detailed=true`; if it is still null, skip it rather than reporting "null."
 - **Implausible values**: A temperature of −50°C or UV of 30 likely indicates a sensor fault. Note the anomaly rather than interpreting the value literally.
 - **Forecast vs. observation disagreement**: If current conditions and the forecast's current snapshot differ substantially, prefer the observation and note the discrepancy.
@@ -67,8 +76,8 @@ Act on the `code`:
 
 ## Server Capabilities
 
-The server exposes a machine-readable `tempest://capabilities` resource (read it with the MCP resource tool) summarizing the available tools, error codes, station scope, and a surface `fingerprint` — the same value that appears in every result's `_meta.fingerprint`.
-You normally don't need it, but consult it if a tool's name or behavior seems to disagree with these instructions, which usually means the server was upgraded.
+The server exposes a machine-readable `tempest://capabilities` resource (also available as the `tempest_get_capabilities` tool, for clients that surface MCP resources poorly) summarizing the available tools, error codes, station scope, and a surface `fingerprint` — the same value that appears in every result's `_meta["net.bconnelly.tempest/fetch"].fingerprint`.
+When a tool's name or behavior disagrees with these instructions, consult it — a server upgrade is the usual cause. Otherwise you don't need it.
 
 ## Weather Briefing
 
@@ -133,7 +142,7 @@ These are estimates — local topography, season, and frontal structure affect r
 - **Steady at 1020+ mb**: Fair weather likely to persist.
 - **Steady below 1000 mb**: Unsettled conditions likely to continue.
 
-When the trend is "falling" or "rising", call it out proactively.
+(Falling and rising pressure trends are on the Alerts & Anomalies proactive-flag list.)
 
 ## Gardening & Frost Guidance
 
@@ -155,7 +164,7 @@ Use `lightning_strike_count`, `lightning_strike_count_last_1hr`, `lightning_stri
 
 Check `lightning_strike_last_epoch` against the current time. Strikes more than a few hours old are historical. Use 1-hour and 3-hour counts to judge whether activity is ongoing.
 
-When lightning is detected, flag it proactively even if the user didn't ask.
+(Detected lightning is on the Alerts & Anomalies proactive-flag list.)
 
 ## Precipitation Type Inference
 
