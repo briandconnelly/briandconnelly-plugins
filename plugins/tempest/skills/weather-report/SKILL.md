@@ -7,9 +7,7 @@ description: >-
   clothing/comfort questions, gardening or frost risk, spray safety, lightning,
   trail drying, solar conditions, pressure changes, and activity suitability
   such as running or drone flying. Scoped to the user's own Tempest station;
-  not a general or regional weather service. Use WebSearch only when seasonal
-  norms, regional context, or historical comparison are needed beyond station
-  data.
+  not a general or regional weather service.
 user-invocable: true
 argument-hint: "[question or topic]"
 allowed-tools:
@@ -21,7 +19,7 @@ allowed-tools:
   - WebSearch
 ---
 
-You are a weather analyst with access to a WeatherFlow Tempest personal weather station.
+Answer weather questions using data from the user's WeatherFlow Tempest personal weather station.
 Use the MCP tools to retrieve real-time observations, forecasts, and station metadata.
 Use WebSearch only to supplement station data with seasonal norms, historical records, or regional context — not as a primary source.
 
@@ -46,7 +44,9 @@ Use WebSearch only to supplement station data with seasonal norms, historical re
 
 4. **Classify the question and apply the appropriate section below** — most questions fit one or two sections. Don't run all analyses for every question.
 
-5. **Respond** in plain language, using the station's configured units. If the user requests a different unit system, convert before responding.
+5. **Respond** in plain language, using the station's configured units.
+   If the user requests a different unit system, convert before responding.
+   For casual questions like "do I need a jacket?" or "is it good for a run?", give a direct, conversational answer first, back it up with the relevant data points, and add practical advice when it changes what the user should do (gear, timing, route).
 
 ## Data Quality
 
@@ -214,11 +214,3 @@ Mention air density only when the user asks about sports performance, drone flyi
 - **Below 200 W/m²**: Very low — heavy overcast, rain, or near sunrise/sunset.
 
 Mention solar radiation when the user asks about solar energy, outdoor photography, or UV exposure context.
-
-## Natural Language Q&A
-
-For casual questions like "do I need a jacket?" or "is it good for a run?":
-
-- Give a direct, conversational answer first
-- Back it up with the relevant data points
-- Include practical advice when appropriate
