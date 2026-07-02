@@ -129,15 +129,17 @@ Only call out feels-like when it meaningfully differs from actual air temperatur
 
 ## Pressure-Based Forecasting
 
-Go beyond reporting the `pressure_trend` value. Use pressure changes to give short-term guidance.
-All thresholds are in mb (≡ hPa). If the station reports in inHg, multiply by 33.864.
+Go beyond reporting the `pressure_trend` value (`falling`, `steady`, or `rising`).
+The server exposes no pressure history, so a rate of change cannot be computed — interpret the categorical trend together with the current sea-level pressure and the short-range forecast.
+Pressure values below are in mb (≡ hPa).
+If the station reports in inHg, multiply by 33.864.
 
-These are estimates — local topography, season, and frontal structure affect reliability. Present as likely outcomes, not certainties.
+These are estimates — local topography, season, and frontal structure affect reliability.
+Present as likely outcomes, not certainties.
 
-- **Falling 1–2 mb/hr**: Conditions likely changing; rain or wind probable within 6–12 hours.
-- **Falling 2–3 mb/hr**: Front approaching; conditions likely deteriorating within a few hours.
-- **Falling 3+ mb/hr**: Rapid deterioration; storm likely arriving soon.
-- **Rising after a drop**: Clearing likely; improving conditions ahead.
+- **Falling, sea-level pressure above 1010 mb**: Conditions likely changing; check the forecast for rain or wind in the next 6–12 hours and lead with it.
+- **Falling, sea-level pressure at or below 1010 mb**: Front likely approaching; conditions may deteriorate within hours.
+- **Rising**: Clearing likely; improving conditions ahead.
 - **Steady at 1020+ mb**: Fair weather likely to persist.
 - **Steady below 1000 mb**: Unsettled conditions likely to continue.
 
