@@ -68,7 +68,7 @@ Station data describes one place at one time — reason about both explicitly:
   Hourly forecast entries carry `local_day` and `local_hour`, which are already station-local.
 - Do not assert time of day unless you know the current time from a trustworthy source (the session's current date/time), converted to the station's timezone.
   The observation `timestamp` is when the reading was taken, not "now" — use it for time-of-day only when the data is fresh (see Data Quality); a stale observation's timestamp is the past.
-  Low solar radiation or UV reflect cloud cover, not necessarily dusk, and are never evidence of the time.
+  Low solar radiation or UV reflects cloud cover, not necessarily dusk, and is never evidence of the time.
 - Prefer absolute station-local times ("by 4pm") over relative ones ("in 3 hours"), especially when the data may be stale.
 - Readings describe conditions at the station's location at measurement time.
   The user or agent may be somewhere else entirely (travel, scheduled or cloud execution) — never phrase observations as the user's surroundings unless they have said they are at the station.
@@ -189,7 +189,7 @@ Thresholds below are sustained `wind_avg` in mph / km/h; convert from the statio
 
 Also:
 
-- **Gust factor**: when `wind_gust` is at least twice `wind_avg`, describe conditions as gusty.
+- **Gust factor**: when `wind_avg` is at least 3 mph / 5 km/h and `wind_gust` is at least twice `wind_avg`, describe conditions as gusty; below that floor, describe the wind as calm or light without gust framing.
   Call it out when it changes advice — drone flying, cycling, spray drift.
 - **Direction**: use the server-provided `wind_direction_cardinal`; map `wind_direction` degrees to a 16-point cardinal name only when it is absent.
   Mention direction when it matters to the activity or signals a shift (see Trend Analysis), not on every answer.
