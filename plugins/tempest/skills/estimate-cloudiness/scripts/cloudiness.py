@@ -34,8 +34,9 @@ from datetime import datetime, timezone
 MIN_USABLE_ELEVATION = 5.0
 # Between MIN_USABLE_ELEVATION and this, report with low confidence.
 LOW_CONFIDENCE_ELEVATION = 15.0
-# Above this clearness index the reading is physically implausible even with
-# cloud-edge enhancement; suspect sensor fault or a wrong timestamp/location.
+# Above this clearness index the reading is outside the plausible sustained
+# range; brief extreme cloud-edge enhancement spikes or a sensor/data problem
+# (fault, reflection, wrong timestamp/location) are the likely causes.
 IMPLAUSIBLE_CI = 1.6
 
 CATEGORY_BANDS = [
@@ -255,9 +256,10 @@ def estimate(
         result["status"] = "ok"
         result["category"] = "implausible"
         result["description"] = (
-            "Observed radiation far exceeds any physically plausible "
-            "clear-sky value -- suspect a sensor fault, reflection onto the "
-            "sensor, or a wrong timestamp/location."
+            "Observed radiation far exceeds the expected clear-sky value -- "
+            "either a brief extreme cloud-edge enhancement spike or a "
+            "sensor/data problem (fault, reflection, wrong "
+            "timestamp/location); re-check in a few minutes."
         )
         result["confidence"] = "none"
         return result
@@ -319,6 +321,14 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    for name, value in (
+        ("--lat", args.lat),
+        ("--lon", args.lon),
+        ("--solar-radiation", args.solar_radiation),
+        ("--pressure", args.pressure),
+    ):
+        if not math.isfinite(value):
+            parser.error(f"{name} must be a finite number")
     if args.solar_radiation < 0:
         parser.error("--solar-radiation must be non-negative")
     if not -90 <= args.lat <= 90:
@@ -329,7 +339,7 @@ def main() -> None:
     result = estimate(
         args.lat, args.lon, args.timestamp, args.solar_radiation, args.pressure
     )
-    json.dump(result, sys.stdout, indent=2)
+    json.dump(result, sys.stdout, indent=2, allow_nan=False)
     print()
 
 

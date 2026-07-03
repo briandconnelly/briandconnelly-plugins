@@ -13,7 +13,7 @@ allowed-tools:
   - mcp__plugin_tempest_mcp-server-tempest__tempest_get_stations
   - mcp__plugin_tempest_mcp-server-tempest__tempest_get_observation
   - mcp__plugin_tempest_mcp-server-tempest__tempest_get_forecast
-  - Bash
+  - Bash(python3:*)
 ---
 
 Estimate current sky condition at the user's Tempest station by comparing the measured solar radiation to the modeled clear-sky value for that exact place and moment.
@@ -29,8 +29,9 @@ Never classify cloudiness from raw solar radiation thresholds alone.
    Needed fields: `timestamp`, `solar_radiation`, `precip`, and `station_pressure` (or `barometric_pressure` — on Tempest both are the station-level value).
    If `solar_radiation` is absent even in the detailed response, the sensor is not reporting — say so and stop.
    On tool errors, follow the weather-report skill's error-handling rules: retry once when the error's `temporary` flag is true (honoring `retry_after_ms`); otherwise report the failure in plain language.
-3. Check freshness: use `ts_retrieved` in `_meta["net.bconnelly.tempest/fetch"]` when present, otherwise the observation `timestamp`.
-   If the effective data is more than 10 minutes old, say so — the assessment describes the observation time, not necessarily "now".
+3. Check freshness: compute the observation's age from its `timestamp` — a fresh fetch can still return an old last-known reading from an offline station.
+   If the observation is more than 10 minutes old, say so — the assessment describes the observation time, not necessarily "now".
+   `_meta["net.bconnelly.tempest/fetch"]` (`cache`, `ts_retrieved`), when present, tells you whether the response came from cache — useful for explaining why data is old, not for computing its age.
 4. Run the bundled script, replacing `$SKILL_DIR` with this skill's base directory (announced when the skill loaded):
 
    ```bash
@@ -48,7 +49,8 @@ Never classify cloudiness from raw solar radiation thresholds alone.
 
 Apply these before or alongside the script's category:
 
-- **Rain trumps**: if `precip` > 0 the sky is cloudy at the station right now, whatever the index says — lead with that and use the index only to describe how dark the overcast is.
+- **Rain trumps**: if `precip` > 0 the sky was cloudy at the station at the observation time, whatever the index says — lead with that and use the index only to describe how dark the overcast is.
+  Phrase it as "right now" only when the observation passed the freshness check.
 - **`status: night`**: cloudiness cannot be measured from solar radiation.
   Say so honestly; if the user still wants an answer, offer the forecast's current conditions via `tempest_get_forecast`, clearly labeled as a model estimate rather than a measurement.
 - **`status: sun_too_low`**: same honesty — the sun is too near the horizon for the index to mean anything.
@@ -62,7 +64,7 @@ Categories (when `status: ok`):
 | `thin_or_partial` | Ambiguous by nature: thin high clouds or haze, bright overcast, or a moment when a passing cloud covers the sun — name both readings, and use rain/humidity context to lean one way |
 | `cloudy` | Mostly cloudy to overcast — the sun is obscured |
 | `thick_overcast` | Heavy overcast, heavy rain, or fog |
-| `implausible` | Do not report a sky condition — flag a likely sensor fault, reflection, or bad timestamp |
+| `implausible` | Do not report a sky condition — describe an anomalous reading: either a brief extreme cloud-edge enhancement spike or a sensor/data problem (fault, reflection, bad timestamp); suggest re-checking in a few minutes |
 
 - When `confidence` is `low` (sun below ~15°), hedge the verdict and mention that low-angle readings are less reliable.
 - Relay any `notes` the script emits when they change what the user should conclude.
