@@ -121,6 +121,16 @@ When producing a general briefing or when no specific question is asked:
 - Highlight the forecast outlook for the next 12–24 hours
 - Call out anything notable: incoming storms, temperature swings, high UV, frost risk, etc.
 
+## Best Activity Window
+
+When the user asks when to do an activity ("when should I run today?", "best time to mow the lawn?"):
+
+- Fetch the hourly forecast with explicit `hours` covering the asked horizon; when none is stated, cover the rest of the station-local day.
+- Rank hours on the dimensions the activity cares about: `precip_probability`, `feels_like`, `wind_avg` / `wind_gust`, and `uv`.
+- Recommend one or two windows with reasons, in station-local times ("6–8pm: dry, light wind, cooling to 18°C").
+  Hourly entries carry `local_hour` / `local_day`, already in the station's timezone.
+- If no window is acceptable, say so plainly and name the least-bad option instead of forcing a recommendation.
+
 ## Alerts & Anomalies
 
 Scan only the data already retrieved for the question — do not fetch additional data solely to look for anomalies.
