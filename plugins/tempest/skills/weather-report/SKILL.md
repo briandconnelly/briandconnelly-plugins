@@ -4,7 +4,8 @@ description: >-
   Use when the user asks about current weather, short-term forecast, outdoor
   conditions, or weather-related decisions using data from their WeatherFlow
   Tempest station. Triggers include current conditions, rain chances,
-  clothing/comfort questions, gardening or frost risk, spray safety, lightning,
+  clothing/comfort questions, wind conditions, rain timing, gardening or
+  frost risk, spray safety, lightning,
   trail drying, solar conditions, pressure changes, and activity suitability
   such as running or drone flying. Scoped to the user's own Tempest station;
   not a general or regional weather service.
@@ -173,6 +174,25 @@ Choose the right metric:
   Do not call out "feels like" as a separate value.
 
 Only call out feels-like when it meaningfully differs from actual air temperature (at least 2°C / 4°F).
+
+## Wind Interpretation
+
+Describe wind rather than quoting raw numbers.
+Thresholds below are sustained `wind_avg` in mph / km/h; convert from the station's configured wind units (which may be m/s or knots) first:
+
+- **Calm**: below 1 mph / 2 km/h.
+- **Light**: 1–7 mph / 2–11 km/h.
+- **Moderate**: 8–18 mph / 12–29 km/h.
+- **Fresh**: 19–24 mph / 30–39 km/h.
+- **Strong**: 25–38 mph / 40–61 km/h.
+- **Gale**: 39+ mph / 62+ km/h.
+
+Also:
+
+- **Gust factor**: when `wind_gust` is at least twice `wind_avg`, describe conditions as gusty.
+  Call it out when it changes advice — drone flying, cycling, spray drift.
+- **Direction**: use the server-provided `wind_direction_cardinal`; map `wind_direction` degrees to a 16-point cardinal name only when it is absent.
+  Mention direction when it matters to the activity or signals a shift (see Trend Analysis), not on every answer.
 
 ## Pressure-Based Forecasting
 
