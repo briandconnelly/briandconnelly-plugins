@@ -298,6 +298,6 @@ Mention air density only when the user asks about sports performance, drone flyi
 - **Below 200 W/m²**: Very low output.
 
 Do not classify sky condition (clear, partly cloudy, overcast) from raw W/m² — the same value can mean overcast at midday or clear sky near sunset.
-For "how cloudy/sunny is it" questions, use the tempest cloudiness skill, which compares the reading against the modeled clear-sky value for the station's location and time.
+For "how cloudy/sunny is it" questions, use the tempest estimate-cloudiness skill, which compares the reading against the modeled clear-sky value for the station's location and time.
 
 Mention solar radiation when the user asks about solar energy, outdoor photography, or UV exposure context.

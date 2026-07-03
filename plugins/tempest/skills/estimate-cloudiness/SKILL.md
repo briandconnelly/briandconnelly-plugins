@@ -1,5 +1,5 @@
 ---
-name: cloudiness
+name: estimate-cloudiness
 description: >-
   Use when the user asks how cloudy, overcast, sunny, or clear it is right
   now at their WeatherFlow Tempest station — including "is the sun out",
