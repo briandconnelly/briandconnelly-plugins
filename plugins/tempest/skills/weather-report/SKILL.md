@@ -59,6 +59,22 @@ These apply to every response, whichever analysis sections you used:
   If the user requests a different unit system, convert before responding.
 - For casual questions like "do I need a jacket?" or "is it good for a run?", give a direct, conversational answer first, back it up with the relevant data points, and add practical advice when it changes what the user should do (gear, timing, route).
 
+## Time & Place
+
+Station data describes one place at one time — reason about both explicitly:
+
+- All time-of-day and calendar reasoning ("this morning", "tonight", "tomorrow") uses the station's timezone (`timezone` in `tempest_get_stations`), with day boundaries at station-local midnight — never the agent's or session's locale.
+  Hourly forecast entries carry `local_day` and `local_hour`, which are already station-local.
+- Do not assert time of day unless you know the current time from a trustworthy source (the session's current date/time), converted to the station's timezone.
+  The observation `timestamp` is when the reading was taken, not "now" — use it for time-of-day only when the data is fresh (see Data Quality); a stale observation's timestamp is the past.
+  Low solar radiation or UV reflect cloud cover, not necessarily dusk, and are never evidence of the time.
+- Prefer absolute station-local times ("by 4pm") over relative ones ("in 3 hours"), especially when the data may be stale.
+- Readings describe conditions at the station's location at measurement time.
+  The user or agent may be somewhere else entirely (travel, scheduled or cloud execution) — never phrase observations as the user's surroundings unless they have said they are at the station.
+- Name the station or its location in the answer whenever there is any chance of ambiguity; always when the account has multiple stations.
+- Lightning distances are measured from the station, not from the user.
+- If the user asks about a location other than the station's, say the station cannot answer for that place rather than substituting station data.
+
 ## Data Quality
 
 Before interpreting sensor values, check:
