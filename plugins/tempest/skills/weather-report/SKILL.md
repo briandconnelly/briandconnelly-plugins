@@ -4,7 +4,8 @@ description: >-
   Use when the user asks about current weather, short-term forecast, outdoor
   conditions, or weather-related decisions using data from their WeatherFlow
   Tempest station. Triggers include current conditions, rain chances,
-  clothing/comfort questions, gardening or frost risk, spray safety, lightning,
+  clothing/comfort questions, wind conditions, rain timing, gardening or
+  frost risk, spray safety, lightning,
   trail drying, solar conditions, pressure changes, and activity suitability
   such as running or drone flying. Scoped to the user's own Tempest station;
   not a general or regional weather service.
@@ -59,6 +60,22 @@ These apply to every response, whichever analysis sections you used:
   If the user requests a different unit system, convert before responding.
 - For casual questions like "do I need a jacket?" or "is it good for a run?", give a direct, conversational answer first, back it up with the relevant data points, and add practical advice when it changes what the user should do (gear, timing, route).
 
+## Time & Place
+
+Station data describes one place at one time — reason about both explicitly:
+
+- All time-of-day and calendar reasoning ("this morning", "tonight", "tomorrow") uses the station's timezone (`timezone` in `tempest_get_stations`), with day boundaries at station-local midnight — never the agent's or session's locale.
+  Hourly forecast entries carry `local_day` and `local_hour`, which are already station-local.
+- Do not assert time of day unless you know the current time from a trustworthy source (the session's current date/time), converted to the station's timezone.
+  The observation `timestamp` is when the reading was taken, not "now" — use it for time-of-day only when the data is fresh (see Data Quality); a stale observation's timestamp is the past.
+  Low solar radiation or UV reflects cloud cover, not necessarily dusk, and is never evidence of the time.
+- Prefer absolute station-local times ("by 4pm") over relative ones ("in 3 hours"), especially when the data may be stale.
+- Readings describe conditions at the station's location at measurement time.
+  The user or agent may be somewhere else entirely (travel, scheduled or cloud execution) — never phrase observations as the user's surroundings unless they have said they are at the station.
+- Name the station or its location in the answer whenever there is any chance of ambiguity; always when the account has multiple stations.
+- Lightning distances are measured from the station, not from the user.
+- If the user asks about a location other than the station's, say the station cannot answer for that place rather than substituting station data.
+
 ## Data Quality
 
 Before interpreting sensor values, check:
@@ -105,6 +122,16 @@ When producing a general briefing or when no specific question is asked:
 - Highlight the forecast outlook for the next 12–24 hours
 - Call out anything notable: incoming storms, temperature swings, high UV, frost risk, etc.
 
+## Best Activity Window
+
+When the user asks when to do an activity ("when should I run today?", "best time to mow the lawn?"):
+
+- Fetch the hourly forecast with explicit `hours` covering the asked horizon; when none is stated, cover the rest of the station-local day.
+- Rank hours on the dimensions the activity cares about: `precip_probability`, `feels_like`, `wind_avg` / `wind_gust`, and `uv`.
+- Recommend one or two windows with reasons, in station-local times ("6–8pm: dry, light wind, cooling to 18°C").
+  Hourly entries carry `local_hour` / `local_day`, already in the station's timezone.
+- If no window is acceptable, say so plainly and name the least-bad option instead of forcing a recommendation.
+
 ## Alerts & Anomalies
 
 Scan only the data already retrieved for the question — do not fetch additional data solely to look for anomalies.
@@ -147,6 +174,25 @@ Choose the right metric:
   Do not call out "feels like" as a separate value.
 
 Only call out feels-like when it meaningfully differs from actual air temperature (at least 2°C / 4°F).
+
+## Wind Interpretation
+
+Describe wind rather than quoting raw numbers.
+Thresholds below are sustained `wind_avg` in mph / km/h; convert from the station's configured wind units (which may be m/s or knots) first:
+
+- **Calm**: below 1 mph / 2 km/h.
+- **Light**: 1–7 mph / 2–11 km/h.
+- **Moderate**: 8–18 mph / 12–29 km/h.
+- **Fresh**: 19–24 mph / 30–39 km/h.
+- **Strong**: 25–38 mph / 40–61 km/h.
+- **Gale**: 39+ mph / 62+ km/h.
+
+Also:
+
+- **Gust factor**: when `wind_avg` is at least 3 mph / 5 km/h and `wind_gust` is at least twice `wind_avg`, describe conditions as gusty; below that floor, describe the wind as calm or light without gust framing.
+  Call it out when it changes advice — drone flying, cycling, spray drift.
+- **Direction**: use the server-provided `wind_direction_cardinal`; map `wind_direction` degrees to a 16-point cardinal name only when it is absent.
+  Mention direction when it matters to the activity or signals a shift (see Trend Analysis), not on every answer.
 
 ## Pressure-Based Forecasting
 
@@ -197,6 +243,15 @@ Strikes more than a few hours old are historical.
 Use 1-hour and 3-hour counts to judge whether activity is ongoing.
 
 (Detected lightning is on the Alerts & Anomalies proactive-flag list.)
+
+## Rain Timing
+
+When the user asks when rain starts or stops, or how long it will last:
+
+- If the current observation shows active precipitation, lead with that; use the forecast only for the taper.
+- Read hourly `precip_probability` and use tiered language: below 30% unlikely, 30–60% possible, above 60% likely.
+- Report onset and offset as station-local time ranges ("likely starting mid-afternoon, tapering after 8pm"), not exact minutes — forecast resolution is hourly.
+- Mention the forecast `precip_type` when it is not plain rain (see Precipitation Type Inference for observation-based inference).
 
 ## Precipitation Type Inference
 
