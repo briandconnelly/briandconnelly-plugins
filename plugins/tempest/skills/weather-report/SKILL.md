@@ -80,10 +80,9 @@ Station data describes one place at one time — reason about both explicitly:
 
 Before interpreting sensor values, check:
 
-- **Stale data**: **If the effective data is more than 10 minutes old, say so before answering.**
-  To find the effective age, prefer `ts_retrieved` in `_meta["net.bconnelly.tempest/fetch"]` (RFC 3339 UTC — when the data was actually fetched upstream) over the observation's own timestamp.
-  `ts_retrieved` may be omitted on some cache hits, so fall back to the observation timestamp when it is absent.
-  `_meta["net.bconnelly.tempest/fetch"].cache` tells you the source: `miss` means freshly fetched, while `memory` or `disk` means it was served from cache and may be older.
+- **Stale data**: **If the observation is more than 10 minutes old, say so before answering.**
+  Compute the age from the observation's own `timestamp` — a fresh fetch can still return an old last-known reading from an offline station, so `ts_retrieved` alone can make stale data look current.
+  `_meta["net.bconnelly.tempest/fetch"]` explains provenance rather than age: `cache` is the source (`miss` means freshly fetched; `memory` or `disk` means served from cache) and `ts_retrieved` (RFC 3339 UTC) is when the data was actually fetched upstream — use them to tell the user why data is old.
 - **Missing or null fields**: Concise (default) responses omit null-valued optional fields, so an absent field is not an error.
   Some metrics (WBGT, delta-T, air density) are only computed under certain conditions.
   If a metric you need is missing, re-fetch with `detailed=true`; if it is still null, skip it rather than reporting "null."
@@ -290,11 +289,14 @@ Mention air density only when the user asks about sports performance, drone flyi
 
 ## Solar Radiation
 
-`solar_radiation` in W/m²:
+`solar_radiation` in W/m², for solar-energy and exposure questions:
 
-- **Above 800 W/m²**: Strong — clear skies, excellent solar production, sunburn risk with prolonged exposure.
-- **400–800 W/m²**: Moderate — partly cloudy or hazy, decent solar output.
-- **200–400 W/m²**: Weak — mostly overcast, limited solar energy.
-- **Below 200 W/m²**: Very low — heavy overcast, rain, or near sunrise/sunset.
+- **Above 800 W/m²**: Strong — excellent solar production, sunburn risk with prolonged exposure.
+- **400–800 W/m²**: Moderate — decent solar output.
+- **200–400 W/m²**: Weak — limited solar energy.
+- **Below 200 W/m²**: Very low output.
+
+Do not classify sky condition (clear, partly cloudy, overcast) from raw W/m² — the same value can mean overcast at midday or clear sky near sunset.
+For "how cloudy/sunny is it" questions, use the tempest estimate-cloudiness skill, which compares the reading against the modeled clear-sky value for the station's location and time.
 
 Mention solar radiation when the user asks about solar energy, outdoor photography, or UV exposure context.
