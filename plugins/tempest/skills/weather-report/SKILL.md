@@ -224,6 +224,15 @@ Use 1-hour and 3-hour counts to judge whether activity is ongoing.
 
 (Detected lightning is on the Alerts & Anomalies proactive-flag list.)
 
+## Rain Timing
+
+When the user asks when rain starts or stops, or how long it will last:
+
+- If the current observation shows active precipitation, lead with that; use the forecast only for the taper.
+- Read hourly `precip_probability` and use tiered language: below 30% unlikely, 30–60% possible, above 60% likely.
+- Report onset and offset as station-local time ranges ("likely starting mid-afternoon, tapering after 8pm"), not exact minutes — forecast resolution is hourly.
+- Mention the forecast `precip_type` when it is not plain rain (see Precipitation Type Inference for observation-based inference).
+
 ## Precipitation Type Inference
 
 The station reports precipitation rate but not type.
