@@ -290,11 +290,14 @@ Mention air density only when the user asks about sports performance, drone flyi
 
 ## Solar Radiation
 
-`solar_radiation` in W/m²:
+`solar_radiation` in W/m², for solar-energy and exposure questions:
 
-- **Above 800 W/m²**: Strong — clear skies, excellent solar production, sunburn risk with prolonged exposure.
-- **400–800 W/m²**: Moderate — partly cloudy or hazy, decent solar output.
-- **200–400 W/m²**: Weak — mostly overcast, limited solar energy.
-- **Below 200 W/m²**: Very low — heavy overcast, rain, or near sunrise/sunset.
+- **Above 800 W/m²**: Strong — excellent solar production, sunburn risk with prolonged exposure.
+- **400–800 W/m²**: Moderate — decent solar output.
+- **200–400 W/m²**: Weak — limited solar energy.
+- **Below 200 W/m²**: Very low output.
+
+Do not classify sky condition (clear, partly cloudy, overcast) from raw W/m² — the same value can mean overcast at midday or clear sky near sunset.
+For "how cloudy/sunny is it" questions, use the tempest cloudiness skill, which compares the reading against the modeled clear-sky value for the station's location and time.
 
 Mention solar radiation when the user asks about solar energy, outdoor photography, or UV exposure context.

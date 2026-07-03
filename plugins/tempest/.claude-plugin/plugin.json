@@ -8,7 +8,7 @@
   "repository": "https://github.com/briandconnelly/mcp-server-tempest",
   "license": "MIT",
   "keywords": ["weather", "tempest", "weatherflow", "mcp"],
-  "skills": ["./skills/weather-report"],
+  "skills": ["./skills/cloudiness", "./skills/weather-report"],
   "mcpServers": {
     "mcp-server-tempest": {
       "command": "uvx",
