@@ -1,0 +1,11 @@
+{
+  "name": "mcp-error-audit",
+  "description": "Slash command that audits MCP tool errors across your Claude Code sessions and prioritizes fixes",
+  "version": "0.1.0",
+  "author": {
+    "name": "Brian Connelly"
+  },
+  "repository": "https://github.com/briandconnelly/briandconnelly-plugins",
+  "license": "MIT",
+  "keywords": ["mcp", "audit", "errors", "diagnostics", "claude-code"]
+}
