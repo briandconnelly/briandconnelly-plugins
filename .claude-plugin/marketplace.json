@@ -29,6 +29,12 @@
       "category": "utilities"
     },
     {
+      "name": "mcp-error-audit",
+      "source": "./plugins/mcp-error-audit",
+      "description": "Slash command that audits MCP tool errors across your Claude Code sessions and prioritizes fixes",
+      "category": "utilities"
+    },
+    {
       "name": "orb-cloud",
       "source": "./plugins/orb-cloud",
       "description": "MCP server for managing Orb Cloud organizations and devices",
