@@ -196,3 +196,44 @@ def test_json_samples_are_structured(tmp_path):
     data = json.loads(mea.to_json(mea.audit(root, "srv", 3)))
     sample = data["by_code"]["not_found"]["samples"][0]
     assert set(sample) == {"ts", "input", "text"}
+
+
+# --- distinct-server merge warning -----------------------------------------
+
+
+def test_canonical_server():
+    assert mea.canonical_server("cwms-tools") == "cwms-tools"
+    assert mea.canonical_server("plugin_cwms_cwms-tools") == "cwms-tools"
+    assert mea.canonical_server("plugin_codex-in-claude_codex-in-claude") == (
+        "codex-in-claude"
+    )
+    assert mea.canonical_server("cc-plugin-codex") == "cc-plugin-codex"
+
+
+def test_distinct_match_warning(tmp_path):
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("x1", "mcp__alpha-srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("x1", envelope("e"), "2026-07-01T00:00:01Z", is_error=True),
+            tool_use("x2", "mcp__beta-srv__go", {}, "2026-07-01T00:01:00Z"),
+            tool_result("x2", envelope("e"), "2026-07-01T00:01:01Z", is_error=True),
+        ],
+    )
+    result = mea.audit(root, "srv", 3)
+    text = mea.to_text(result)
+    assert "WARNING" in text and "alpha-srv" in text and "beta-srv" in text
+    data = json.loads(mea.to_json(result))
+    assert data["distinct_matches"] == ["alpha-srv", "beta-srv"]
+    # Same server across naming eras → no warning
+    write_jsonl(
+        os.path.join(root, "proj2", "s2.jsonl"),
+        [
+            tool_use("y1", "mcp__plugin_alpha_alpha-srv__go", {}, "2026-07-02T00:00:00Z"),
+            tool_result("y1", "ok", "2026-07-02T00:00:01Z"),
+        ],
+    )
+    result = mea.audit(root, "alpha-srv", 3)
+    assert "WARNING" not in mea.to_text(result)
+    assert "distinct_matches" not in json.loads(mea.to_json(result))

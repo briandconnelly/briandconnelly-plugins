@@ -189,6 +189,27 @@ def parse_tool_name(name: str) -> tuple[str, str] | None:
     return None
 
 
+def canonical_server(srv: str) -> str:
+    """Collapse 'plugin_<plugin>_<server>' to '<server>' for identity checks.
+
+    Assumes plugin names contain no underscores (marketplace convention is
+    kebab-case); a plugin name with underscores would over-strip, which only
+    risks a missed warning, never wrong statistics.
+    """
+    if srv.startswith("plugin_"):
+        rest = srv[len("plugin_") :]
+        _, sep, tail = rest.partition("_")
+        if sep:
+            return tail
+    return srv
+
+
+def distinct_matches(result) -> list[str]:
+    """Canonical names when the substring matched >1 genuinely different server."""
+    canon = sorted({canonical_server(s) for s in result["matched_servers"]})
+    return canon if len(canon) > 1 else []
+
+
 def session_key(path: str, root: str) -> str:
     """Collapse sidechain transcripts into their parent session.
 
@@ -400,6 +421,11 @@ def to_json(result) -> str:
             "mode": "audit",
             "server": result["server"],
             "matched_servers": result["matched_servers"],
+            **(
+                {"distinct_matches": distinct_matches(result)}
+                if distinct_matches(result)
+                else {}
+            ),
             "files_scanned": result["files_scanned"],
             "sessions_scanned": result["sessions_scanned"],
             "server_sessions": len(result["audit_sessions"]),
@@ -456,6 +482,12 @@ def to_text(result) -> str:
         )
         return "\n".join(out)
     out.append(f"matched: {', '.join(result['matched_servers'])}")
+    distinct = distinct_matches(result)
+    if distinct:
+        out.append(
+            f"WARNING: matched servers look distinct ({', '.join(distinct)}); "
+            "the stats below blend them — narrow --server if unintended."
+        )
     out.append(
         f"scanned {result['files_scanned']} transcripts "
         f"({result['sessions_scanned']} sessions) · this server: "
