@@ -32,6 +32,17 @@ from glob import glob
 
 VALID_SERVER = re.compile(r"^[A-Za-z0-9._-]+$")
 
+# Servers with fewer calls than this sort below the rest: a 1-for-1 error
+# rate is noise, not signal.
+MIN_CALLS_FOR_RATE = 5
+
+
+def server_sort_key(kv):
+    """Discovery ranking: error rate desc, low-volume servers last."""
+    _, s = kv
+    rate = s.errors / s.calls if s.calls else 0.0
+    return (s.calls < MIN_CALLS_FOR_RATE, -rate, -s.errors, -s.calls)
+
 
 def iter_records(path: str):
     """Yield parsed JSON objects from a JSONL file, skipping bad lines.
@@ -332,12 +343,13 @@ def to_json(result) -> str:
                     srv: {
                         "calls": s.calls,
                         "errors": s.errors,
+                        "error_rate": round(s.errors / s.calls, 3) if s.calls else None,
                         "sessions": len(s.sessions),
                         "last_call": s.last_call,
                     }
                     for srv, s in sorted(
                         result["servers"].items(),
-                        key=lambda kv: (-kv[1].errors, -kv[1].calls),
+                        key=server_sort_key,
                     )
                 },
             },
@@ -387,18 +399,21 @@ def to_text(result) -> str:
         out.append("# MCP servers seen in transcripts (discovery mode)")
         out.append(
             f"scanned {result['files_scanned']} transcripts · "
-            f"{result['sessions_scanned']} sessions"
+            f"{result['sessions_scanned']} sessions · ranked by error rate "
+            f"(servers with <{MIN_CALLS_FOR_RATE} calls listed last)"
         )
         if not result["servers"]:
             out.append("\nNo MCP tool calls found in any transcript.")
             return "\n".join(out)
-        out.append(f"\n{'server':<44} {'calls':>6} {'errs':>5} {'sess':>4}  last_call")
-        for srv, s in sorted(
-            result["servers"].items(), key=lambda kv: (-kv[1].errors, -kv[1].calls)
-        ):
+        out.append(
+            f"\n{'server':<44} {'calls':>6} {'errs':>5} {'err%':>6} {'sess':>4}  last_call"
+        )
+        for srv, s in sorted(result["servers"].items(), key=server_sort_key):
             last = (s.last_call or "?")[:10]
+            pct = f"{100 * s.errors / s.calls:.1f}" if s.calls else "n/a"
             out.append(
-                f"{srv:<44} {s.calls:>6} {s.errors:>5} {len(s.sessions):>4}  {last}"
+                f"{srv:<44} {s.calls:>6} {s.errors:>5} {pct:>6} "
+                f"{len(s.sessions):>4}  {last}"
             )
         out.append("\nRe-run with --server <name-or-substring> to audit one server.")
         return "\n".join(out)

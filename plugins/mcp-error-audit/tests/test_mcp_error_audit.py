@@ -85,3 +85,39 @@ def test_classify_envelope_and_fallbacks():
 def test_parse_envelope_prose_prefix():
     obj = mea.parse_envelope('MCP error: {"ok": false, "error": {"code": "x"}}')
     assert obj is not None and obj["error"]["code"] == "x"
+
+
+# --- discovery ranking ------------------------------------------------------
+
+
+def build_discovery_fixture(tmp_path):
+    """noisy: 2/100 errors (2%). loud: 5/10 errors (50%). tiny: 1/1 (100%, <5 calls)."""
+    root = str(tmp_path)
+    records = []
+    for i in range(100):
+        records.append(tool_use(f"n{i}", "mcp__noisy__go", {}, f"2026-07-01T00:{i:02d}:00Z"))
+        records.append(
+            tool_result(f"n{i}", envelope("e") if i < 2 else "ok", f"2026-07-01T00:{i:02d}:01Z", is_error=i < 2)
+        )
+    for i in range(10):
+        records.append(tool_use(f"l{i}", "mcp__loud__go", {}, f"2026-07-02T00:{i:02d}:00Z"))
+        records.append(
+            tool_result(f"l{i}", envelope("e") if i < 5 else "ok", f"2026-07-02T00:{i:02d}:01Z", is_error=i < 5)
+        )
+    records.append(tool_use("t0", "mcp__tiny__go", {}, "2026-07-03T00:00:00Z"))
+    records.append(tool_result("t0", envelope("e"), "2026-07-03T00:00:01Z", is_error=True))
+    write_jsonl(os.path.join(root, "proj", "s1.jsonl"), records)
+    return root
+
+
+def test_discovery_ranks_by_error_rate_with_floor(tmp_path):
+    root = build_discovery_fixture(tmp_path)
+    result = mea.audit(root, "", 3)
+    text = mea.to_text(result)
+    lines = [ln for ln in text.splitlines() if ln.startswith(("noisy", "loud", "tiny"))]
+    order = [ln.split()[0] for ln in lines]
+    # loud (50%) outranks noisy (2%); tiny (100% but <5 calls) sinks to the bottom
+    assert order == ["loud", "noisy", "tiny"]
+    data = json.loads(mea.to_json(result))
+    assert list(data["servers"]) == ["loud", "noisy", "tiny"]
+    assert data["servers"]["loud"]["error_rate"] == 0.5
