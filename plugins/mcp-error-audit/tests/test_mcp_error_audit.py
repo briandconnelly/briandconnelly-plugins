@@ -237,3 +237,10 @@ def test_distinct_match_warning(tmp_path):
     result = mea.audit(root, "alpha-srv", 3)
     assert "WARNING" not in mea.to_text(result)
     assert "distinct_matches" not in json.loads(mea.to_json(result))
+
+
+def test_matching_is_case_insensitive(tmp_path):
+    root = build_audit_fixture(tmp_path)
+    result = mea.audit(root, "SRV", 3)
+    assert result["matched_servers"] == ["srv"]
+    assert sum(result["total_calls"].values()) == 6

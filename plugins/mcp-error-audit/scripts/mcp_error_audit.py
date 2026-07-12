@@ -274,6 +274,7 @@ class ServerStat:
 def audit(root: str, server: str, samples: int):
     files = sorted(glob(os.path.join(root, "**", "*.jsonl"), recursive=True))
     all_sessions = {session_key(p, root) for p in files}
+    needle = server.lower()
 
     servers: dict[str, ServerStat] = collections.defaultdict(ServerStat)
     total_calls = collections.Counter()
@@ -283,11 +284,10 @@ def audit(root: str, server: str, samples: int):
 
     for path in files:
         session = session_key(path, root)
-        records = list(iter_records(path))
 
         id2parsed: dict[str, tuple[str, str]] = {}
         id2input: dict[str, str] = {}
-        for rec in records:
+        for rec in iter_records(path):
             ts = record_ts(rec)
             for item in message_content(rec):
                 if not (isinstance(item, dict) and item.get("type") == "tool_use"):
@@ -304,7 +304,7 @@ def audit(root: str, server: str, samples: int):
                 sstat.sessions.add(session)
                 if ts and (sstat.last_call is None or ts > sstat.last_call):
                     sstat.last_call = ts
-                if server and server in srv:
+                if needle and needle in srv.lower():
                     total_calls[tool] += 1
                     audit_sessions.add(session)
                     if tid:
@@ -316,7 +316,7 @@ def audit(root: str, server: str, samples: int):
         # An error "recovers" when a later result for the same tool in the
         # same transcript succeeds; pending holds codes awaiting that success.
         pending: dict[str, list[str]] = collections.defaultdict(list)
-        for rec in records:
+        for rec in iter_records(path):
             ts = record_ts(rec)
             for item in message_content(rec):
                 if not (isinstance(item, dict) and item.get("type") == "tool_result"):
@@ -330,7 +330,7 @@ def audit(root: str, server: str, samples: int):
                 err = is_error_result(item, obj)
                 if err:
                     servers[srv].errors += 1
-                if not (server and server in srv):
+                if not (needle and needle in srv.lower()):
                     continue
                 if not err:
                     for code in pending.pop(tool, []):
@@ -354,7 +354,7 @@ def audit(root: str, server: str, samples: int):
 
     return {
         "server": server,
-        "matched_servers": sorted(s for s in servers if server and server in s),
+        "matched_servers": sorted(s for s in servers if needle and needle in s.lower()),
         "files_scanned": len(files),
         "sessions_scanned": len(all_sessions),
         "servers": servers,
