@@ -160,13 +160,22 @@ def classify(text: str, obj) -> tuple[str, bool | None, str | None]:
 
 
 def is_error_result(item: dict, obj) -> bool:
-    """True if a tool_result is an error, by native flag or envelope semantics."""
+    """True if a tool_result is an error, by native flag or envelope semantics.
+
+    A bare `status: "error"` is only trusted when the payload also carries an
+    `error` object/string or a string `code` — otherwise a successful result
+    whose *data* describes an error (e.g. a job-status poll) would be
+    miscounted as a tool failure.
+    """
     if item.get("is_error") is True:
         return True
     if isinstance(obj, dict):
         if obj.get("ok") is False:
             return True
-        if obj.get("status") == "error":
+        if obj.get("status") == "error" and (
+            isinstance(obj.get("error"), (dict, str))
+            or isinstance(obj.get("code"), str)
+        ):
             return True
     return False
 

@@ -121,3 +121,17 @@ def test_discovery_ranks_by_error_rate_with_floor(tmp_path):
     data = json.loads(mea.to_json(result))
     assert list(data["servers"]) == ["loud", "noisy", "tiny"]
     assert data["servers"]["loud"]["error_rate"] == 0.5
+
+
+# --- error detection --------------------------------------------------------
+
+
+def test_is_error_result_ignores_status_error_data_payloads():
+    # A successful poll whose *data* says a background job errored is not a tool error.
+    data_payload = {"status": "error", "job_id": "j1", "detail": "job failed upstream"}
+    assert mea.is_error_result({"is_error": False}, data_payload) is False
+    # Corroborated forms still count.
+    assert mea.is_error_result({}, {"status": "error", "error": {"code": "x"}}) is True
+    assert mea.is_error_result({}, {"status": "error", "code": "timeout"}) is True
+    assert mea.is_error_result({}, {"ok": False}) is True
+    assert mea.is_error_result({"is_error": True}, None) is True
