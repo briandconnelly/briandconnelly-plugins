@@ -212,7 +212,23 @@ class CodeStat:
     repair: str | None = None
     first_seen: str | None = None
     last_seen: str | None = None
-    samples: list[str] = field(default_factory=list)
+    samples: list = field(default_factory=list)
+
+    def add_sample(self, ts: str | None, input_snippet: str, text: str, limit: int):
+        """Keep the `limit` most recent samples (recent evidence beats stale)."""
+        entry = {
+            "ts": ts,
+            "input": input_snippet,
+            "text": " ".join(text.split())[:200],
+        }
+        if len(self.samples) < limit:
+            self.samples.append(entry)
+            return
+        oldest = min(
+            range(len(self.samples)), key=lambda i: self.samples[i]["ts"] or ""
+        )
+        if (ts or "") > (self.samples[oldest]["ts"] or ""):
+            self.samples[oldest] = entry
 
     def see(self, ts: str | None) -> bool:
         """Record an occurrence timestamp; True if it is the newest so far."""
@@ -249,6 +265,7 @@ def audit(root: str, server: str, samples: int):
         records = list(iter_records(path))
 
         id2parsed: dict[str, tuple[str, str]] = {}
+        id2input: dict[str, str] = {}
         for rec in records:
             ts = record_ts(rec)
             for item in message_content(rec):
@@ -269,6 +286,11 @@ def audit(root: str, server: str, samples: int):
                 if server and server in srv:
                     total_calls[tool] += 1
                     audit_sessions.add(session)
+                    if tid:
+                        raw = json.dumps(
+                            item.get("input", {}), sort_keys=True, default=str
+                        )
+                        id2input[tid] = " ".join(raw.split())[:120]
 
         # An error "recovers" when a later result for the same tool in the
         # same transcript succeeds; pending holds codes awaiting that success.
@@ -304,8 +326,9 @@ def audit(root: str, server: str, samples: int):
                         stat.retryable = retryable
                     if repair:
                         stat.repair = repair
-                if len(stat.samples) < samples:
-                    stat.samples.append(" ".join(text.split())[:200])
+                stat.add_sample(
+                    ts, id2input.get(item.get("tool_use_id") or "", "?"), text, samples
+                )
                 pending[tool].append(code)
 
     return {
@@ -452,25 +475,27 @@ def to_text(result) -> str:
     )
     out.append(
         f"{'code':<34} {'count':>5} {'sess':>4} {'recov':>5} {'retry':>5}  "
-        f"{'last_seen':<10}  tools"
+        f"{'first_seen':<10}  {'last_seen':<10}  tools"
     )
     for code, s in sorted_codes(result):
         retry = {True: "yes", False: "no", None: "?"}[s.retryable]
         tools = ",".join(f"{t}×{c}" for t, c in s.tools.most_common())
+        first = (s.first_seen or "?")[:10]
         last = (s.last_seen or "?")[:10]
         out.append(
             f"{code:<34} {s.count:>5} {len(s.sessions):>4} {s.recovered:>5} "
-            f"{retry:>5}  {last:<10}  {tools}"
+            f"{retry:>5}  {first:<10}  {last:<10}  {tools}"
         )
         if s.repair:
             out.append(f"    repair: {s.repair}")
 
-    out.append("\n## Representative samples")
+    out.append("\n## Representative samples  (date · input → error)")
     for code, s in sorted_codes(result):
         if s.samples:
             out.append(f"[{code}]")
-            for sample in s.samples:
-                out.append(f"  · {sample}")
+            for sample in sorted(s.samples, key=lambda e: e["ts"] or ""):
+                date = (sample["ts"] or "?")[:10]
+                out.append(f"  · {date} · {sample['input']} → {sample['text']}")
     return "\n".join(out)
 
 

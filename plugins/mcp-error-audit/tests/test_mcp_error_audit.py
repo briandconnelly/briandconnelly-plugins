@@ -145,3 +145,54 @@ def test_parse_envelope_trailing_text():
     assert mea.parse_envelope("no json here") is None
     assert mea.parse_envelope("") is None
     assert mea.parse_envelope('["not", "a", "dict"]') is None
+
+
+# --- audit-mode evidence ----------------------------------------------------
+
+
+def build_audit_fixture(tmp_path):
+    root = str(tmp_path)
+    s1 = [
+        tool_use("a1", "mcp__srv__fetch", {"id": "one"}, "2026-06-01T10:00:00Z"),
+        tool_result("a1", envelope("not_found", repair="use srv_list"), "2026-06-01T10:00:01Z", is_error=True),
+        tool_use("a2", "mcp__srv__fetch", {"id": "two"}, "2026-06-01T10:01:00Z"),
+        tool_result("a2", "ok", "2026-06-01T10:01:01Z"),  # recovery for a1
+    ]
+    s2 = [
+        tool_use("b1", "mcp__srv__fetch", {"id": "three"}, "2026-07-01T10:00:00Z"),
+        tool_result("b1", envelope("not_found"), "2026-07-01T10:00:01Z", is_error=True),
+        tool_use("b2", "mcp__srv__fetch", {"id": "four"}, "2026-07-02T10:00:00Z"),
+        tool_result("b2", envelope("not_found"), "2026-07-02T10:00:01Z", is_error=True),
+        tool_use("b3", "mcp__srv__fetch", {"id": "five"}, "2026-07-03T10:00:00Z"),
+        tool_result("b3", envelope("not_found"), "2026-07-03T10:00:01Z", is_error=True),
+        tool_use("b4", "mcp__srv__fetch", {"id": "six"}, "2026-07-04T10:00:00Z"),
+        tool_result("b4", envelope("not_found"), "2026-07-04T10:00:01Z", is_error=True),
+    ]
+    write_jsonl(os.path.join(root, "proj", "s1.jsonl"), s1)
+    write_jsonl(os.path.join(root, "proj", "s2.jsonl"), s2)
+    return root
+
+
+def test_samples_are_recent_dated_and_carry_inputs(tmp_path):
+    root = build_audit_fixture(tmp_path)
+    result = mea.audit(root, "srv", 3)
+    stat = result["codes"]["not_found"]
+    assert stat.count == 5
+    assert stat.recovered == 1
+    assert stat.first_seen.startswith("2026-06-01")
+    assert stat.last_seen.startswith("2026-07-04")
+    # 5 errors, limit 3 → the 3 most recent survive
+    dates = sorted(s["ts"][:10] for s in stat.samples)
+    assert dates == ["2026-07-02", "2026-07-03", "2026-07-04"]
+    assert all('"id"' in s["input"] for s in stat.samples)
+    text = mea.to_text(result)
+    assert "first_seen" in text  # column present
+    assert "2026-06-01" in text  # first_seen value rendered
+    assert '{"id": "six"}' in text  # input snippet rendered in samples
+
+
+def test_json_samples_are_structured(tmp_path):
+    root = build_audit_fixture(tmp_path)
+    data = json.loads(mea.to_json(mea.audit(root, "srv", 3)))
+    sample = data["by_code"]["not_found"]["samples"][0]
+    assert set(sample) == {"ts", "input", "text"}
