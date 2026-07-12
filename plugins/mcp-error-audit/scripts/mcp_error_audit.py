@@ -502,8 +502,8 @@ def to_text(result) -> str:
 
     out.append(
         f"\n## Errors by code  (sess = distinct sessions out of the {n_sess} "
-        "that called this server; recov = errors followed later in-session "
-        "by a success of the same tool)"
+        "that called this server; recov = errors followed later in the same "
+        "transcript by a success of the same tool)"
     )
     out.append(
         f"{'code':<34} {'count':>5} {'sess':>4} {'recov':>5} {'retry':>5}  "
