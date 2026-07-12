@@ -99,24 +99,18 @@ def result_text(item: dict) -> str:
 def parse_envelope(text: str):
     """Return the parsed JSON dict for a result payload, else None.
 
-    Tolerates a prose wrapper before the object (e.g. 'MCP error: {...}') so a
-    structured envelope isn't lost just because it's prefixed.
+    Tolerates prose before and after the object (e.g. 'MCP error: {...} …')
+    so a structured envelope isn't lost just because it's wrapped.
     """
     stripped = text.strip()
-    candidates = []
-    if stripped[:1] in "{[":
-        candidates.append(stripped)
     brace = stripped.find("{")
-    if brace > 0:
-        candidates.append(stripped[brace:])
-    for candidate in candidates:
-        try:
-            obj = json.loads(candidate)
-        except (json.JSONDecodeError, ValueError, RecursionError):
-            continue
-        if isinstance(obj, dict):
-            return obj
-    return None
+    if brace == -1:
+        return None
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(stripped[brace:])
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        return None
+    return obj if isinstance(obj, dict) else None
 
 
 def error_object(obj):

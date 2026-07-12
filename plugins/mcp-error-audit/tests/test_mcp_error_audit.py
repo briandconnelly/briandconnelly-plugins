@@ -135,3 +135,13 @@ def test_is_error_result_ignores_status_error_data_payloads():
     assert mea.is_error_result({}, {"status": "error", "code": "timeout"}) is True
     assert mea.is_error_result({}, {"ok": False}) is True
     assert mea.is_error_result({"is_error": True}, None) is True
+
+
+def test_parse_envelope_trailing_text():
+    obj = mea.parse_envelope('{"ok": false, "error": {"code": "x"}} (see logs)')
+    assert obj is not None and obj["error"]["code"] == "x"
+    obj = mea.parse_envelope('prefix {"ok": false, "error": {"code": "y"}} suffix')
+    assert obj is not None and obj["error"]["code"] == "y"
+    assert mea.parse_envelope("no json here") is None
+    assert mea.parse_envelope("") is None
+    assert mea.parse_envelope('["not", "a", "dict"]') is None
