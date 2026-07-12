@@ -95,17 +95,33 @@ def build_discovery_fixture(tmp_path):
     root = str(tmp_path)
     records = []
     for i in range(100):
-        records.append(tool_use(f"n{i}", "mcp__noisy__go", {}, f"2026-07-01T00:{i:02d}:00Z"))
         records.append(
-            tool_result(f"n{i}", envelope("e") if i < 2 else "ok", f"2026-07-01T00:{i:02d}:01Z", is_error=i < 2)
+            tool_use(f"n{i}", "mcp__noisy__go", {}, f"2026-07-01T00:{i:02d}:00Z")
+        )
+        records.append(
+            tool_result(
+                f"n{i}",
+                envelope("e") if i < 2 else "ok",
+                f"2026-07-01T00:{i:02d}:01Z",
+                is_error=i < 2,
+            )
         )
     for i in range(10):
-        records.append(tool_use(f"l{i}", "mcp__loud__go", {}, f"2026-07-02T00:{i:02d}:00Z"))
         records.append(
-            tool_result(f"l{i}", envelope("e") if i < 5 else "ok", f"2026-07-02T00:{i:02d}:01Z", is_error=i < 5)
+            tool_use(f"l{i}", "mcp__loud__go", {}, f"2026-07-02T00:{i:02d}:00Z")
+        )
+        records.append(
+            tool_result(
+                f"l{i}",
+                envelope("e") if i < 5 else "ok",
+                f"2026-07-02T00:{i:02d}:01Z",
+                is_error=i < 5,
+            )
         )
     records.append(tool_use("t0", "mcp__tiny__go", {}, "2026-07-03T00:00:00Z"))
-    records.append(tool_result("t0", envelope("e"), "2026-07-03T00:00:01Z", is_error=True))
+    records.append(
+        tool_result("t0", envelope("e"), "2026-07-03T00:00:01Z", is_error=True)
+    )
     write_jsonl(os.path.join(root, "proj", "s1.jsonl"), records)
     return root
 
@@ -154,7 +170,12 @@ def build_audit_fixture(tmp_path):
     root = str(tmp_path)
     s1 = [
         tool_use("a1", "mcp__srv__fetch", {"id": "one"}, "2026-06-01T10:00:00Z"),
-        tool_result("a1", envelope("not_found", repair="use srv_list"), "2026-06-01T10:00:01Z", is_error=True),
+        tool_result(
+            "a1",
+            envelope("not_found", repair="use srv_list"),
+            "2026-06-01T10:00:01Z",
+            is_error=True,
+        ),
         tool_use("a2", "mcp__srv__fetch", {"id": "two"}, "2026-06-01T10:01:00Z"),
         tool_result("a2", "ok", "2026-06-01T10:01:01Z"),  # recovery for a1
     ]
@@ -230,7 +251,9 @@ def test_distinct_match_warning(tmp_path):
     write_jsonl(
         os.path.join(root, "proj2", "s2.jsonl"),
         [
-            tool_use("y1", "mcp__plugin_alpha_alpha-srv__go", {}, "2026-07-02T00:00:00Z"),
+            tool_use(
+                "y1", "mcp__plugin_alpha_alpha-srv__go", {}, "2026-07-02T00:00:00Z"
+            ),
             tool_result("y1", "ok", "2026-07-02T00:00:01Z"),
         ],
     )
