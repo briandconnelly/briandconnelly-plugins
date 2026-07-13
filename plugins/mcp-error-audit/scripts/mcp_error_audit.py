@@ -381,13 +381,22 @@ def records_for_file(path: str, root: str) -> list[CallRecord]:
 class CodeStat:
     count: int = 0
     recovered: int = 0
-    sessions: set[str] = field(default_factory=set)
+    # A later success of the same tool at a DIFFERENT (or unknown) version. Not a
+    # recovery: the environment changed, so this version's recovery is indeterminate.
+    cross_version_success: int = 0
+    sessions: set[tuple[str, str]] = field(default_factory=set)  # (scope, session)
+    by_scope: collections.Counter = field(default_factory=collections.Counter)
     tools: collections.Counter = field(default_factory=collections.Counter)
     retryable: bool | None = None
     repair: str | None = None
     first_seen: str | None = None
     last_seen: str | None = None
     samples: list = field(default_factory=list)
+
+    def session_count(self) -> int:
+        """Distinct sessions, NOT (scope, session) pairs — one session may span two
+        versions, and counting pairs would double-count it."""
+        return len({session for _scope, session in self.sessions})
 
     def add_sample(self, ts: str | None, input_snippet: str, text: str, limit: int):
         """Keep the `limit` most recent samples (recent evidence beats stale)."""
@@ -463,34 +472,42 @@ def aggregate(
 ) -> None:
     """Fold one transcript's selected call records into the running totals.
 
-    Recovery is scoped per file: a later SUCCESS for the same tool retires the codes
-    still `pending` for that tool. Records must arrive in the RESULT order
-    `records_for_file` returns (unpaired calls last) so recovery sees results in the
-    order they actually landed, and unanswered calls never masquerade as a success.
+    An error is resolved by the FIRST later success of the same tool. Same scope ->
+    recovered. Different or unknown scope -> indeterminate (cross_version_success).
+    Records must arrive in the RESULT order `records_for_file` returns (unpaired calls
+    last) so recovery sees results in the order they actually landed, and unanswered
+    calls never masquerade as a success.
     """
-    pending: dict[str, list[str]] = collections.defaultdict(list)
+    pending: dict[tuple[str, str], list[str]] = collections.defaultdict(list)
+
     for rec in records:
+        scope = rec.scope(filters.group_by)
         total_calls[rec.tool] += 1
         audit_sessions.add(rec.session)
         coverage.total_calls += 1
-        if rec.unknown_reason is None:
-            coverage.attributed_calls += 1
-        else:
+        if rec.unknown_reason:
             coverage.unknown[rec.unknown_reason] += 1
+        else:
+            coverage.attributed_calls += 1
 
         if rec.unknown_reason == "no_result":
             continue  # never answered: nothing to classify or recover
 
         if not rec.is_error:
-            for code in pending.pop(rec.tool, []):
-                codes[code].recovered += 1
+            for (tool, pend_scope) in [k for k in pending if k[0] == rec.tool]:
+                for code in pending.pop((tool, pend_scope)):
+                    if pend_scope == scope:
+                        codes[code].recovered += 1
+                    else:
+                        codes[code].cross_version_success += 1
             continue
 
         total_errors[rec.tool] += 1
         assert rec.code is not None  # classify() always sets code when is_error is True
         stat = codes[rec.code]
         stat.count += 1
-        stat.sessions.add(rec.session)
+        stat.sessions.add((scope, rec.session))
+        stat.by_scope[scope] += 1
         stat.tools[rec.tool] += 1
         if stat.see(rec.ts):
             if rec.retryable is not None:
@@ -498,7 +515,7 @@ def aggregate(
             if rec.repair:
                 stat.repair = rec.repair
         stat.add_sample(rec.ts, rec.input, rec.text, samples)
-        pending[rec.tool].append(rec.code)
+        pending[(rec.tool, scope)].append(rec.code)
 
 
 def audit(root: str, server: str, samples: int, filters: "Filters | None" = None):
@@ -591,7 +608,7 @@ def to_json(result) -> str:
     codes = {
         code: {
             "count": s.count,
-            "sessions": len(s.sessions),
+            "sessions": s.session_count(),
             "recovered": s.recovered,
             "retryable": s.retryable,
             "first_seen": s.first_seen,
@@ -701,7 +718,7 @@ def to_text(result) -> str:
         first = (s.first_seen or "?")[:10]
         last = (s.last_seen or "?")[:10]
         out.append(
-            f"{code:<34} {s.count:>5} {len(s.sessions):>4} {s.recovered:>5} "
+            f"{code:<34} {s.count:>5} {s.session_count():>4} {s.recovered:>5} "
             f"{retry:>5}  {first:<10}  {last:<10}  {tools}"
         )
         if s.repair:

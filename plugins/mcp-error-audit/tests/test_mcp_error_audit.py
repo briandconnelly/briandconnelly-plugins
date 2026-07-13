@@ -1,5 +1,6 @@
 """Tests for mcp_error_audit.py, run via: uvx pytest plugins/mcp-error-audit/tests/ -q"""
 
+import collections
 import json
 import os
 import sys
@@ -442,3 +443,82 @@ def test_tool_use_without_id_is_counted_as_no_result(tmp_path):
     result = mea.audit(root, "srv", 3)
     srv_stat = result["servers"]["srv"]
     assert srv_stat.calls == 1  # Must be counted in discovery mode
+
+
+# --- scope-aware recovery ---------------------------------------------------
+
+
+def _versioned_error(code, version):
+    return json.dumps(
+        {"ok": False, "error": {"code": code, "message": "boom", "retryable": False},
+         "meta": {"server_version": version}}
+    )
+
+
+def _versioned_ok(version):
+    return json.dumps({"ok": True, "meta": {"server_version": version}})
+
+
+def test_recovery_requires_the_same_version(tmp_path):
+    """An error on v1 followed by a success on v2 is NOT recovery for v1.
+
+    The environment changed underneath; the honest answer is indeterminate.
+    """
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", _versioned_error("boom_code", "1.0.0"), "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+            tool_result("t2", _versioned_ok("2.0.0"), "2026-07-01T00:01:01Z"),
+        ],
+    )
+    result = mea.audit(root, "srv", 3)
+    stat = result["codes"]["boom_code"]
+    assert stat.recovered == 0
+    assert stat.cross_version_success == 1
+
+
+def test_recovery_counts_within_the_same_version(tmp_path):
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", _versioned_error("boom_code", "1.0.0"), "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+            tool_result("t2", _versioned_ok("1.0.0"), "2026-07-01T00:01:01Z"),
+        ],
+    )
+    stat = mea.audit(root, "srv", 3)["codes"]["boom_code"]
+    assert stat.recovered == 1
+    assert stat.cross_version_success == 0
+
+
+def test_multi_version_folded_session_attributes_each_call(tmp_path):
+    """A session can span an upgrade: the parent transcript and its subagent sidechain
+    fold into ONE session, but each call keeps its own version."""
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "abc.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", _versioned_error("boom_code", "1.0.0"), "2026-07-01T00:00:01Z", True),
+        ],
+    )
+    write_jsonl(
+        os.path.join(root, "proj", "abc", "subagents", "agent-1.jsonl"),
+        [
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-02T00:00:00Z"),
+            tool_result("t2", _versioned_error("boom_code", "2.0.0"), "2026-07-02T00:00:01Z", True),
+        ],
+    )
+    result = mea.audit(root, "srv", 3)
+    stat = result["codes"]["boom_code"]
+    assert stat.by_scope == collections.Counter({"1.0.0": 1, "2.0.0": 1})
+    # one folded session, but two scopes within it — session counts must not imply
+    # a single version
+    assert len(result["audit_sessions"]) == 1
+    assert stat.session_count() == 1
+    assert stat.sessions == {("1.0.0", "proj/abc"), ("2.0.0", "proj/abc")}
