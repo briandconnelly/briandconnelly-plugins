@@ -30,13 +30,11 @@ Each sample line shows the occurrence date, the tool input, and the error text; 
 If the report is scoped (`--server-version`, `--fingerprint`, `--since/--until`), say so in
 your answer, and carry its caveats:
 
-- A code absent from a version means **not observed in that version over that column's
-  calls** — NOT "fixed". This tool reads transcripts; it cannot see a code change.
-  Say "not observed in 0.10.0 over N calls", taking N from the matrix's `calls` row for
-  **that column** — that is the column's own denominator. Never pair a single version with
-  the header's total call count: it spans every version, and a denominator that borrows
-  another release's calls is a lie. Only call something fixed if you have separate
-  evidence (a changelog entry, the code itself).
+- A code absent from a version means **not observed in that version over that column's calls** — NOT "fixed".
+  This tool reads transcripts; it cannot see a code change.
+  Say "not observed in 0.10.0 over N calls", taking N from the matrix's `calls` row for **that column** — that is the column's own denominator.
+  Prefer that column's own `calls` row over the header's total call count: the header's denominator is whatever the ACTIVE filters selected — every matched call when the report is unscoped, but only that filter's calls when `--server-version`/`--fingerprint`/`--since`/`--until` narrow it — so it is easy to grab the wrong number, and the matrix's own per-column `calls` row is unambiguous regardless of scope.
+  Only call something fixed if you have separate evidence (a changelog entry, the code itself).
 - If the report says rates are PARTIAL, lead with that: they are computed over calls whose
   release could be attributed, not over all calls.
 - If the report says the scope is date-based and APPROXIMATE, note that a date is a proxy
