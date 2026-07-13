@@ -18,8 +18,22 @@ Scope an audit to a release:
   **Approximate**: a date is a proxy for a release, and is wrong if you upgraded late.
 - `--group-by version|fingerprint`, `--unknown include|exclude|only`
 
-Calls whose release cannot be read from their own result are reported in an `unknown`
-bucket with a reason, and per-version rates are computed over attributed calls only.
+## Denominators
+
+Never a statistic whose denominator is a guess.
+
+- The **header** rate is `errors ÷ all matched calls`, attributed or not, and says so.
+  It belongs to no single release.
+- The **matrix** prints one column per release (or fingerprint) *observed in the calls* — so a
+  release you are running that has produced no errors yet still appears, with a zero row over a
+  real call count. Each column carries its own `calls` denominator and an `err%` over it; no
+  release's rate borrows another's calls.
+- Calls whose release cannot be read from their own result land in an `unknown` column with a
+  reason (`no_result`, `unparseable_result`, `not_emitted`, `missing_timestamp`), and the report
+  is flagged **PARTIAL**. They never inflate a release's denominator.
+
+A zero in the matrix means **not observed in that release over that column's calls** — not
+"fixed". This tool reads transcripts; it cannot see a code change.
 
 ## How it works
 

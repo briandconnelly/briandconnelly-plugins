@@ -809,7 +809,10 @@ def to_text(result) -> str:
 
     calls = sum(result["total_calls"].values())
     errors = sum(result["total_errors"].values())
-    rate = f"{100 * errors / calls:.1f}%" if calls else "n/a"
+    # This rate spans EVERY matched call, attributed or not. That is a legitimate
+    # figure — but it belongs to no single release, so it is labeled as what it is.
+    # The per-release rates live in the matrix, each over its own denominator.
+    rate = f"{100 * errors / calls:.1f}% of all matched calls, attributed or not" if calls else "n/a"
     n_sess = len(result["audit_sessions"])
     out.append(f"# MCP error audit — servers matching '{result['server']}'")
     if not calls:
@@ -852,9 +855,16 @@ def to_text(result) -> str:
         + (f" · unattributed: {dict(cov.unknown)}" if cov.unknown else "")
     )
     if cov.partial():
+        # Say exactly what the report computes. The previous wording claimed every rate
+        # below was attributed-only while the sole rate printed was errors/ALL calls —
+        # and no per-scope rate existed at all.
+        unattributed = sum(cov.unknown.values())
         out.append(
-            "NOTE: rates below are PARTIAL — computed over attributed calls only, "
-            "because some calls carry no version. They are not error rates over all calls."
+            f"NOTE: PARTIAL — {unattributed} calls could not be attributed to a {dim}. "
+            f"Each {dim} column in the matrix below has its own denominator (its `calls` "
+            f"row), so no release's rate borrows another's calls; the unattributable ones "
+            "are isolated in the `unknown` column instead of inflating any release. The "
+            "overall rate in the header spans all matched calls, attributed or not."
         )
     if result["filters"].date_scoped():
         out.append(

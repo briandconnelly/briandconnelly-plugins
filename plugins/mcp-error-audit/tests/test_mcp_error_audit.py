@@ -721,6 +721,81 @@ def test_rate_uses_attributed_calls_and_flags_partial(tmp_path):
     assert "partial" in text.lower()
 
 
+def _mixed_attribution_corpus(root):
+    """1.0.0: 2 calls, 1 error (50%). No envelope: 3 calls, 1 error (33.3%).
+
+    Overall: 2 errors / 5 calls = 40.0% — a figure that belongs to NO release.
+    """
+    records = [
+        tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+        tool_result("t1", _versioned_error("known", "1.0.0"), "2026-07-01T00:00:01Z", True),
+        tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+        tool_result("t2", _versioned_ok("1.0.0"), "2026-07-01T00:01:01Z"),
+        tool_use("t3", "mcp__srv__go", {}, "2026-07-01T00:02:00Z"),
+        tool_result("t3", "Connection closed", "2026-07-01T00:02:01Z", True),
+        tool_use("t4", "mcp__srv__go", {}, "2026-07-01T00:03:00Z"),
+        tool_result("t4", "plain text, no envelope", "2026-07-01T00:03:01Z"),
+        tool_use("t5", "mcp__srv__go", {}, "2026-07-01T00:04:00Z"),
+        tool_result("t5", "plain text, no envelope", "2026-07-01T00:04:01Z"),
+    ]
+    write_jsonl(os.path.join(root, "proj", "s1.jsonl"), records)
+
+
+def test_header_rate_is_labeled_as_spanning_all_calls(tmp_path):
+    """The ONE rate printed was errors/ALL calls, under a note claiming the opposite.
+
+    The header rate (2/5 = 40.0%) includes unattributed calls. It is fine to print —
+    but only labeled as what it is. It must NOT sit under a note asserting that "rates
+    below are computed over attributed calls only", because that describes a
+    computation the report never performed.
+    """
+    root = str(tmp_path)
+    _mixed_attribution_corpus(root)
+    text = mea.to_text(mea.audit(root, "srv", 3))
+    header = next(ln for ln in text.splitlines() if ln.startswith("scanned "))
+    assert "2 errors (40.0% of all matched calls, attributed or not)" in header
+    # The old note claimed the rates were attributed-only. They were not, and there
+    # were no per-scope rates at all. That exact sentence must be gone.
+    assert "computed over attributed calls only" not in text
+
+
+def test_per_scope_rates_use_that_scopes_own_denominator(tmp_path):
+    """Every per-scope rate divides by THAT scope's calls — never the global count."""
+    root = str(tmp_path)
+    _mixed_attribution_corpus(root)
+    result = mea.audit(root, "srv", 3)
+    text = mea.to_text(result)
+    lines = text.splitlines()
+    header_idx = lines.index("## Errors by code × version")
+
+    calls_row = next(ln for ln in lines[header_idx + 1 :] if ln.startswith("calls"))
+    rate_row = next(ln for ln in lines[header_idx + 1 :] if ln.startswith("err%"))
+    assert calls_row.split() == ["calls", "2", "3"]
+    # 1/2 at 1.0.0 and 1/3 unattributed. Neither is the global 40.0%.
+    assert rate_row.split() == ["err%", "50.0%", "33.3%"]
+
+    assert mea.scope_rate(result, "1.0.0") == "50.0%"
+    data = json.loads(mea.to_json(result))
+    assert data["coverage"]["calls_by_scope"] == {"1.0.0": 2, "unknown": 3}
+    assert data["coverage"]["errors_by_scope"] == {"1.0.0": 1, "unknown": 1}
+
+
+def test_partial_note_describes_what_the_report_actually_does(tmp_path):
+    """The PARTIAL note must describe the report's real computation, not a fiction."""
+    root = str(tmp_path)
+    _mixed_attribution_corpus(root)
+    text = mea.to_text(mea.audit(root, "srv", 3))
+    note = next(ln for ln in text.splitlines() if ln.startswith("NOTE: PARTIAL"))
+    assert "3 calls could not be attributed to a version" in note
+    # It must point at the real mechanism: per-column denominators, unknown isolated.
+    assert "own denominator" in note and "unknown" in note
+
+    # And when EVERY call is attributed, there is nothing partial to warn about.
+    clean = str(tmp_path / "clean")
+    _clean_release_corpus(clean)
+    assert "PARTIAL" not in mea.to_text(mea.audit(clean, "srv", 3))
+
+
 def test_matrix_shows_code_by_version(tmp_path):
     root = str(tmp_path)
     _two_version_corpus(root)
