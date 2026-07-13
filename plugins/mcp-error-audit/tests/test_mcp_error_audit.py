@@ -592,15 +592,37 @@ def test_date_filter_uses_the_call_timestamp_not_the_result(tmp_path):
 
 def test_date_filter_excludes_undated_calls_as_missing_timestamp(tmp_path):
     root = str(tmp_path)
-    rec_use = tool_use("t1", "mcp__srv__go", {}, "2026-07-05T00:00:00Z")
-    del rec_use["timestamp"]  # an undated call cannot be placed in a window
-    write_jsonl(
-        os.path.join(root, "proj", "s1.jsonl"),
-        [rec_use, tool_result("t1", _versioned_error("c", "1.0.0"), "2026-07-05T00:00:01Z", True)],
-    )
+    # Build a corpus with both dated and undated calls inside the window
+    records = [
+        # dated call inside the window
+        tool_use("t1", "mcp__srv__go", {}, "2026-07-05T00:00:00Z"),
+        tool_result("t1", _versioned_error("dated_error", "1.0.0"), "2026-07-05T00:00:01Z", True),
+        # dated call inside the window that succeeds
+        tool_use("t2", "mcp__srv__go", {}, "2026-07-05T10:00:00Z"),
+        tool_result("t2", _versioned_ok("1.0.0"), "2026-07-05T10:00:01Z"),
+    ]
+    # undated call cannot be placed in a window
+    rec_use = tool_use("t3", "mcp__srv__go", {}, "2026-07-05T12:00:00Z")
+    del rec_use["timestamp"]
+    records.extend([rec_use, tool_result("t3", _versioned_error("undated_error", "1.0.0"), "2026-07-05T12:00:01Z", True)])
+
+    write_jsonl(os.path.join(root, "proj", "s1.jsonl"), records)
     result = mea.audit(root, "srv", 3, mea.Filters(since="2026-07-05"))
-    assert set(result["codes"]) == set()
-    assert result["coverage"].unknown["missing_timestamp"] == 1
+
+    # Verify the invariant: total_calls == attributed_calls + sum(unknown.values())
+    cov = result["coverage"]
+    assert cov.total_calls == cov.attributed_calls + sum(cov.unknown.values()), \
+        f"Invariant broken: {cov.total_calls} != {cov.attributed_calls} + {sum(cov.unknown.values())}"
+
+    # Verify the undated call is excluded but still counted in total_calls
+    assert cov.unknown["missing_timestamp"] == 1
+    assert cov.total_calls == 3  # 2 dated + 1 undated
+
+    # Verify the dated calls are still counted and attributed
+    assert cov.attributed_calls == 2  # only dated calls have versions
+
+    # Verify the error from the dated call is in the codes (undated error is excluded)
+    assert set(result["codes"]) == {"dated_error"}
 
 
 def test_unknown_only_and_exclude(tmp_path):

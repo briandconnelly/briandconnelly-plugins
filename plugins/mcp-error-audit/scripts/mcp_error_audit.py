@@ -476,6 +476,7 @@ class Filters:
             # The CALL's start time, never the result's: filtering the two records
             # independently would split a pair and manufacture phantom no_result calls.
             if not rec.ts:
+                coverage.total_calls += 1
                 coverage.unknown["missing_timestamp"] += 1
                 return False
             day = rec.ts[:10]
