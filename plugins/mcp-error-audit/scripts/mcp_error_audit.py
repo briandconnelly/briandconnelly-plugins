@@ -637,10 +637,12 @@ def to_json(result) -> str:
             "count": s.count,
             "sessions": s.session_count(),
             "recovered": s.recovered,
+            "cross_version_success": s.cross_version_success,
             "retryable": s.retryable,
             "first_seen": s.first_seen,
             "last_seen": s.last_seen,
             "tools": dict(s.tools),
+            "by_scope": dict(s.by_scope),
             "repair": s.repair,
             "samples": s.samples,
         }
@@ -670,6 +672,14 @@ def to_json(result) -> str:
                 for t in result["total_calls"]
             },
             "by_code": codes,
+            "coverage": {
+                "total_calls": result["coverage"].total_calls,
+                "attributed_calls": result["coverage"].attributed_calls,
+                "unknown": dict(result["coverage"].unknown),
+                "partial": result["coverage"].partial(),
+                "group_by": result["filters"].group_by,
+                "date_scoped": result["filters"].date_scoped(),
+            },
         },
         indent=2,
     )
@@ -725,6 +735,39 @@ def to_text(result) -> str:
         f"last call {(matched_last_call(result) or '?')[:10]}"
     )
 
+    cov = result["coverage"]
+    dim = result["filters"].group_by
+    attributed = cov.attributed_calls
+    out.append(
+        f"coverage: {attributed}/{cov.total_calls} calls attributed to a {dim}"
+        + (f" · unattributed: {dict(cov.unknown)}" if cov.unknown else "")
+    )
+    if cov.partial():
+        out.append(
+            "NOTE: rates below are PARTIAL — computed over attributed calls only, "
+            "because some calls carry no version. They are not error rates over all calls."
+        )
+    if result["filters"].date_scoped():
+        out.append(
+            "NOTE: date-scoped, APPROXIMATE — a date is a proxy for a release. It is wrong "
+            "if you upgraded late or ran a dev tree between releases. Prefer "
+            "--server-version or --fingerprint, which are observed in the envelope."
+        )
+
+    scopes = sorted({sc for s in result["codes"].values() for sc in s.by_scope})
+    if scopes:
+        out.append(f"\n## Errors by code × {dim}")
+        header = f"{'code':<34}" + "".join(f"{sc:>14}" for sc in scopes)
+        out.append(header)
+        for code, s in sorted_codes(result):
+            row = f"{code:<34}" + "".join(f"{s.by_scope.get(sc, 0):>14}" for sc in scopes)
+            out.append(row)
+        out.append(
+            "\nA zero above means NOT OBSERVED in that "
+            f"{dim} over the attributed calls shown — not a fix. This tool reads "
+            "transcripts; it cannot see a code change."
+        )
+
     out.append("\n## Per-tool")
     out.append(f"{'tool':<28} {'calls':>6} {'errs':>6}")
     for tool, n in result["total_calls"].most_common():
@@ -733,10 +776,12 @@ def to_text(result) -> str:
     out.append(
         f"\n## Errors by code  (sess = distinct sessions out of the {n_sess} "
         "that called this server; recov = errors followed later in the same "
-        "transcript by a success of the same tool)"
+        "transcript by a success of the same tool AND scope; cross = followed "
+        "instead by a success at a different/unknown scope — indeterminate, "
+        "not recovery)"
     )
     out.append(
-        f"{'code':<34} {'count':>5} {'sess':>4} {'recov':>5} {'retry':>5}  "
+        f"{'code':<34} {'count':>5} {'sess':>4} {'recov':>5} {'cross':>5} {'retry':>5}  "
         f"{'first_seen':<10}  {'last_seen':<10}  tools"
     )
     for code, s in sorted_codes(result):
@@ -746,7 +791,7 @@ def to_text(result) -> str:
         last = (s.last_seen or "?")[:10]
         out.append(
             f"{code:<34} {s.count:>5} {s.session_count():>4} {s.recovered:>5} "
-            f"{retry:>5}  {first:<10}  {last:<10}  {tools}"
+            f"{s.cross_version_success:>5} {retry:>5}  {first:<10}  {last:<10}  {tools}"
         )
         if s.repair:
             out.append(f"    repair: {s.repair}")

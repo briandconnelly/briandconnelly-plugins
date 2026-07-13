@@ -640,3 +640,60 @@ def test_unknown_only_and_exclude(tmp_path):
     assert set(only["codes"]) == {"transport_connection_closed"}
     excl = mea.audit(root, "srv", 3, mea.Filters(unknown="exclude"))
     assert set(excl["codes"]) == {"known"}
+
+
+# --- coverage and the matrix ------------------------------------------------
+
+
+def test_rate_uses_attributed_calls_and_flags_partial(tmp_path):
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", _versioned_error("known", "1.0.0"), "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+            tool_result("t2", "Connection closed", "2026-07-01T00:01:01Z", True),
+        ],
+    )
+    result = mea.audit(root, "srv", 3)
+    cov = result["coverage"]
+    assert cov.total_calls == 2
+    assert cov.attributed_calls == 1
+    assert cov.unknown["unparseable_result"] == 1
+    assert cov.partial() is True
+
+    data = json.loads(mea.to_json(result))
+    assert data["coverage"]["attributed_calls"] == 1
+    assert data["coverage"]["partial"] is True
+    text = mea.to_text(result)
+    assert "partial" in text.lower()
+
+
+def test_matrix_shows_code_by_version(tmp_path):
+    root = str(tmp_path)
+    _two_version_corpus(root)
+    data = json.loads(mea.to_json(mea.audit(root, "srv", 3)))
+    assert data["by_code"]["old_code"]["by_scope"] == {"1.0.0": 1}
+    assert data["by_code"]["new_code"]["by_scope"] == {"2.0.0": 1}
+    text = mea.to_text(mea.audit(root, "srv", 3))
+    assert "1.0.0" in text and "2.0.0" in text
+
+
+def test_text_report_says_not_observed_never_fixed(tmp_path):
+    root = str(tmp_path)
+    _two_version_corpus(root)
+    text = mea.to_text(mea.audit(root, "srv", 3, mea.Filters(server_version="2.0.0")))
+    assert "fixed" not in text.lower()
+
+
+def test_discovery_output_is_unchanged_by_version_work(tmp_path):
+    """Golden guard: discovery keeps its all-call denominator and stays unversioned."""
+    root = str(tmp_path)
+    _two_version_corpus(root)
+    data = json.loads(mea.to_json(mea.audit(root, "", 3)))
+    assert data["mode"] == "discovery"
+    assert data["servers"]["srv"]["calls"] == 2
+    assert data["servers"]["srv"]["errors"] == 2
+    assert data["servers"]["srv"]["error_rate"] == 1.0
+    assert "coverage" not in data
