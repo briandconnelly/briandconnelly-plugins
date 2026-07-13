@@ -15,7 +15,11 @@ With no --server, runs discovery mode: lists every MCP server seen in the
 transcripts with call/error/session counts.
 
 Usage:
-    mcp_error_audit.py [--server SUBSTRING] [--json] [--root DIR] [--samples N]
+    mcp_error_audit.py [SERVER] [--server-version V] [--fingerprint FP]
+                       [--since YYYY-MM-DD] [--until YYYY-MM-DD]
+                       [--group-by version|fingerprint] [--unknown include|exclude|only]
+                       [--json] [--root DIR] [--samples N]
+    mcp_error_audit.py --args "SERVER [FLAGS...]"   # re-parsed with shlex; no quotes allowed
 
 Standard library only.
 """
@@ -24,17 +28,77 @@ from __future__ import annotations
 
 import argparse
 import collections
+import datetime
 import json
 import os
 import re
+import shlex
 from dataclasses import dataclass, field
 from glob import glob
 
 VALID_SERVER = re.compile(r"^[A-Za-z0-9._-]+$")
 
+# The server token stays strict. A fingerprint carries '/' (e.g. srv/0.1/schema-38), so
+# it needs its own class — do NOT widen VALID_SERVER to accept it.
+VALID_FINGERPRINT = re.compile(r"^[A-Za-z0-9._/-]+$")
+VALID_VERSION = re.compile(r"^[A-Za-z0-9.+_-]+$")
+VALID_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# The label used wherever a call's release could not be attributed from its own result.
+UNKNOWN = "unknown"
+
+# Exact paths, in precedence order. NEVER a regex over key names: a server may emit an
+# unrelated version (codex-in-claude emits `codex_version`, the Codex CLI's version),
+# and a name-matching heuristic would report on the wrong software. Both `meta.*` and
+# top-level shapes are required — in real corpora roughly half of all results carry no
+# `meta` at all (job/status envelopes), and those carry their identity at top level.
+VERSION_PATHS = (
+    ("meta", "server_version"),
+    ("server_version",),
+    ("meta", "server", "version"),
+    ("server", "version"),
+)
+FINGERPRINT_PATHS = (
+    ("meta", "fingerprint"),
+    ("fingerprint",),
+)
+
+
+def _dig(obj, path: tuple[str, ...]) -> str | None:
+    """The non-empty string at `path` in `obj`, or None. Never raises on odd shapes."""
+    cur = obj
+    for key in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur if isinstance(cur, str) and cur else None
+
+
+def _first_at_paths(obj, paths) -> str | None:
+    for path in paths:
+        found = _dig(obj, path)
+        if found:
+            return found
+    return None
+
+
+def extract_version(obj) -> str | None:
+    """The server's own release, from an allowlisted path in its result envelope."""
+    return _first_at_paths(obj, VERSION_PATHS)
+
+
+def extract_fingerprint(obj) -> str | None:
+    """The server's contract/surface id, from an allowlisted path."""
+    return _first_at_paths(obj, FINGERPRINT_PATHS)
+
+
 # Servers with fewer calls than this sort below the rest: a 1-for-1 error
 # rate is noise, not signal.
 MIN_CALLS_FOR_RATE = 5
+
+# Floor for the code×scope matrix's per-scope column width, so short version
+# labels ("1.0.0") don't crowd their counts.
+MIN_SCOPE_COL = 6
 
 
 def server_sort_key(kv):
@@ -224,16 +288,140 @@ def session_key(path: str, root: str) -> str:
 
 
 @dataclass
+class CallRecord:
+    """One MCP tool call and its outcome.
+
+    Attribution (`version`/`fingerprint`, or `unknown_reason`) and classification
+    (`is_error`/`code`) are INDEPENDENT: a call whose release cannot be attributed may
+    still be a real error, and is still counted as one.
+    """
+
+    input_id: str
+    server: str
+    tool: str
+    session: str
+    # The CALL's start time. Used ONLY for --since/--until: filtering the tool_use and
+    # tool_result records independently would split a pair and manufacture phantom
+    # no_result calls. It is NOT the error's occurrence time — see result_ts.
+    ts: str | None
+    input: str
+    # The paired RESULT's time: when the error actually landed. first_seen/last_seen,
+    # `repair`/`retryable` recency, and the sample dates are all occurrence facts and
+    # must read this, not ts. None until the call is paired (and for calls never
+    # answered, which carry no outcome to date anyway).
+    result_ts: str | None = None
+    text: str = ""
+    version: str | None = None
+    fingerprint: str | None = None
+    unknown_reason: str | None = None
+    is_error: bool = False
+    code: str | None = None
+    retryable: bool | None = None
+    repair: str | None = None
+
+    def scope(self, group_by: str) -> str:
+        """This call's bucket under the chosen dimension; UNKNOWN when unattributed."""
+        value = self.fingerprint if group_by == "fingerprint" else self.version
+        return value or UNKNOWN
+
+
+def records_for_file(path: str, root: str) -> list[CallRecord]:
+    """Every MCP call in one transcript, in RESULT order, unpaired calls last.
+
+    Result order (not call order) is what recovery reasons about: an error "recovers"
+    when a later RESULT for the same tool succeeds.
+    """
+    session = session_key(path, root)
+    calls: dict[str, CallRecord] = {}
+    no_id_calls: list[CallRecord] = []
+    for rec in iter_records(path):
+        ts = record_ts(rec)
+        for item in message_content(rec):
+            if not (isinstance(item, dict) and item.get("type") == "tool_use"):
+                continue
+            parsed = parse_tool_name(item.get("name") or "")
+            if not parsed:
+                continue
+            server, tool = parsed
+            raw = json.dumps(item.get("input", {}), sort_keys=True, default=str)
+            tid = item.get("id")
+            if tid:
+                calls[tid] = CallRecord(
+                    input_id=tid,
+                    server=server,
+                    tool=tool,
+                    session=session,
+                    ts=ts,
+                    input=" ".join(raw.split())[:120],
+                )
+            else:
+                # Tool use with valid name but no id: record as no_result
+                no_id_calls.append(
+                    CallRecord(
+                        input_id="",
+                        server=server,
+                        tool=tool,
+                        session=session,
+                        ts=ts,
+                        input=" ".join(raw.split())[:120],
+                        unknown_reason="no_result",
+                    )
+                )
+
+    ordered: list[CallRecord] = []
+    for rec in iter_records(path):
+        for item in message_content(rec):
+            if not (isinstance(item, dict) and item.get("type") == "tool_result"):
+                continue
+            call = calls.pop(item.get("tool_use_id") or "", None)
+            if call is None:
+                continue
+            text = result_text(item)
+            obj = parse_envelope(text)
+            call.result_ts = record_ts(rec)
+            call.text = text
+            call.is_error = is_error_result(item, obj)
+            if call.is_error:
+                call.code, call.retryable, call.repair = classify(text, obj)
+            if not isinstance(obj, dict):
+                call.unknown_reason = "unparseable_result"
+            else:
+                call.version = extract_version(obj)
+                call.fingerprint = extract_fingerprint(obj)
+                if call.version is None and call.fingerprint is None:
+                    call.unknown_reason = "not_emitted"
+            ordered.append(call)
+
+    # Calls never answered: no result to attribute from, and no outcome to classify.
+    for call in calls.values():
+        call.unknown_reason = "no_result"
+        ordered.append(call)
+
+    # Append calls that had no id (they can never be paired with results)
+    ordered.extend(no_id_calls)
+    return ordered
+
+
+@dataclass
 class CodeStat:
     count: int = 0
     recovered: int = 0
-    sessions: set[str] = field(default_factory=set)
+    # A later success of the same tool at a DIFFERENT (or unknown) version. Not a
+    # recovery: the environment changed, so this version's recovery is indeterminate.
+    cross_version_success: int = 0
+    sessions: set[tuple[str, str]] = field(default_factory=set)  # (scope, session)
+    by_scope: collections.Counter = field(default_factory=collections.Counter)
     tools: collections.Counter = field(default_factory=collections.Counter)
     retryable: bool | None = None
     repair: str | None = None
     first_seen: str | None = None
     last_seen: str | None = None
     samples: list = field(default_factory=list)
+
+    def session_count(self) -> int:
+        """Distinct sessions, NOT (scope, session) pairs — one session may span two
+        versions, and counting pairs would double-count it."""
+        return len({session for _scope, session in self.sessions})
 
     def add_sample(self, ts: str | None, input_snippet: str, text: str, limit: int):
         """Keep the `limit` most recent samples (recent evidence beats stale)."""
@@ -273,7 +461,189 @@ class ServerStat:
     last_call: str | None = None
 
 
-def audit(root: str, server: str, samples: int):
+@dataclass
+class Coverage:
+    """Attribution is relative to the ACTIVE `Filters.group_by` dimension: a call
+    that carries a fingerprint but no server_version is unattributed when grouping
+    by version, even though it has a perfectly well-formed envelope — and vice
+    versa. This is deliberately NOT the same thing as `CallRecord.unknown_reason`,
+    which asks only "was there a usable envelope at all," independent of which
+    dimension the report is currently keyed by."""
+
+    total_calls: int = 0
+    attributed_calls: int = 0
+    unknown: collections.Counter = field(default_factory=collections.Counter)
+    # CALLS (not errors) per scope — the only honest denominator for a per-scope rate,
+    # and the N in "not observed in 0.10.0 over N attributed calls". Errors alone cannot
+    # supply it: a release with zero errors has no error rows at all, yet it is exactly
+    # the release the user is running and asking about. Includes an UNKNOWN key when
+    # some selected calls could not be attributed, so the buckets sum to every call
+    # aggregate() saw.
+    calls_by_scope: collections.Counter = field(default_factory=collections.Counter)
+    # Calls a date filter (--since/--until) dropped because they carried no timestamp to
+    # place in the window. This is a SCOPE EXCLUSION, not an attribution failure — an
+    # undated call may carry a perfectly good version, so it must NOT land in `unknown`
+    # or count toward `total_calls`/`attributed_calls`: the same as every other filter
+    # exclusion (version/fingerprint mismatch, --unknown exclude/only), none of which
+    # touch coverage either. Tracked separately purely so the report can say how many
+    # calls a date scope dropped, instead of letting them vanish silently.
+    excluded_missing_timestamp: int = 0
+
+    def partial(self) -> bool:
+        """True when some calls could not be attributed — every rate is then partial."""
+        return sum(self.unknown.values()) > 0
+
+
+@dataclass
+class Filters:
+    """Scope selection. `server_version` and `fingerprint` are OBSERVED facts read from
+    the envelope. `since`/`until` are an APPROXIMATION — a date is a proxy for a release
+    and breaks when the user upgrades late or runs a dev tree between releases."""
+
+    server_version: str | None = None
+    fingerprint: str | None = None
+    since: str | None = None
+    until: str | None = None
+    group_by: str = "version"  # version | fingerprint
+    unknown: str = "include"  # include | exclude | only
+
+    def date_scoped(self) -> bool:
+        return bool(self.since or self.until)
+
+    def describe_active(self) -> str:
+        """Human-readable list of the scope filters currently narrowing results.
+
+        Empty when every filter is at its default (nothing is being scoped).
+        """
+        parts = []
+        if self.server_version:
+            parts.append(f"server-version {self.server_version}")
+        if self.fingerprint:
+            parts.append(f"fingerprint {self.fingerprint}")
+        if self.since:
+            parts.append(f"since {self.since}")
+        if self.until:
+            parts.append(f"until {self.until}")
+        if self.unknown != "include":
+            parts.append(f"unknown={self.unknown}")
+        return ", ".join(parts)
+
+    def selects(self, rec: CallRecord, coverage: Coverage) -> bool:
+        # ONE definition of unknown, and it is the same one Coverage uses: does this call
+        # carry a value for the dimension we are grouping by? Testing rec.unknown_reason
+        # instead ("was there any envelope at all?") is dimension-INdependent, and the two
+        # diverge on the whole fingerprint-only corpus that exists today: `exclude` became
+        # a silent no-op, and `only` returned nothing while coverage reported those very
+        # calls as unattributed.
+        unattributed = rec.scope(self.group_by) == UNKNOWN
+        if self.unknown == "exclude" and unattributed:
+            return False
+        if self.unknown == "only" and not unattributed:
+            return False
+        if self.server_version and rec.version != self.server_version:
+            return False
+        if self.fingerprint and rec.fingerprint != self.fingerprint:
+            return False
+        if self.date_scoped():
+            # The CALL's start time, never the result's: filtering the two records
+            # independently would split a pair and manufacture phantom no_result calls.
+            if not rec.ts:
+                # Excluded by the date window, not a failure to attribute: an undated
+                # call may carry a perfectly good version. Do not touch total_calls or
+                # unknown — every other filter exclusion (version/fingerprint mismatch,
+                # --unknown exclude/only) leaves coverage alone too, and this must match.
+                coverage.excluded_missing_timestamp += 1
+                return False
+            day = rec.ts[:10]
+            if self.since and day < self.since:
+                return False
+            if self.until and day > self.until:
+                return False
+        return True
+
+
+def aggregate(
+    records: list[CallRecord],
+    filters: Filters,
+    samples: int,
+    codes: dict[str, "CodeStat"],
+    total_calls: collections.Counter,
+    total_errors: collections.Counter,
+    audit_sessions: set[str],
+    coverage: Coverage,
+) -> None:
+    """Fold one transcript's selected call records into the running totals.
+
+    An error is resolved by the FIRST later success of the same tool. Same scope ->
+    recovered. Different or unknown scope -> indeterminate (cross_version_success).
+    Records must arrive in the RESULT order `records_for_file` returns (unpaired calls
+    last) so recovery sees results in the order they actually landed, and unanswered
+    calls never masquerade as a success.
+    """
+    pending: dict[tuple[str, str], list[str]] = collections.defaultdict(list)
+
+    for rec in records:
+        scope = rec.scope(filters.group_by)
+        total_calls[rec.tool] += 1
+        audit_sessions.add(rec.session)
+        coverage.total_calls += 1
+        # Count the CALL against its scope, whether or not it errored. A clean release
+        # must still get a column (and a denominator) — otherwise the release with no
+        # errors yet is invisible in the report.
+        coverage.calls_by_scope[scope] += 1
+        # Attribution is judged against filters.group_by, the ACTIVE dimension — not
+        # against whether the record has ANY identity at all. A call with only a
+        # fingerprint is not attributed when the matrix and header are keyed by
+        # version. rec.unknown_reason stays dimension-independent ("was there a
+        # usable envelope at all"); when this dimension's own value is simply
+        # absent from an otherwise-fine envelope, that reason is "not_emitted"
+        # here even if rec.unknown_reason is None (some OTHER dimension was set).
+        if scope != UNKNOWN:
+            coverage.attributed_calls += 1
+        else:
+            coverage.unknown[rec.unknown_reason or "not_emitted"] += 1
+
+        if rec.unknown_reason == "no_result":
+            continue  # never answered: nothing to classify or recover
+
+        if not rec.is_error:
+            for (tool, pend_scope) in [k for k in pending if k[0] == rec.tool]:
+                for code in pending.pop((tool, pend_scope)):
+                    # Recovery requires BOTH ends to be attributed to the SAME scope.
+                    # UNKNOWN is not a scope that can equal itself: two calls that each
+                    # carry no version may well be from different releases, so a success
+                    # at an unknown scope is evidence of nothing, and an error at an
+                    # unknown scope is recovered by nothing. Report those as
+                    # indeterminate. Comparing pend_scope == scope alone made unknown ==
+                    # unknown true and quietly restored the old unscoped semantics —
+                    # across the entire corpus, where no call carries a version yet.
+                    if scope != UNKNOWN and pend_scope == scope:
+                        codes[code].recovered += 1
+                    else:
+                        codes[code].cross_version_success += 1
+            continue
+
+        total_errors[rec.tool] += 1
+        assert rec.code is not None  # classify() always sets code when is_error is True
+        stat = codes[rec.code]
+        stat.count += 1
+        stat.sessions.add((scope, rec.session))
+        stat.by_scope[scope] += 1
+        stat.tools[rec.tool] += 1
+        # Occurrence time is the RESULT's, never the call's start: an error happened when
+        # it came back. Only --since/--until reads rec.ts, and only to keep a call and its
+        # result on the same side of the window.
+        if stat.see(rec.result_ts):
+            if rec.retryable is not None:
+                stat.retryable = rec.retryable
+            if rec.repair:
+                stat.repair = rec.repair
+        stat.add_sample(rec.result_ts, rec.input, rec.text, samples)
+        pending[(rec.tool, scope)].append(rec.code)
+
+
+def audit(root: str, server: str, samples: int, filters: "Filters | None" = None):
+    filters = filters or Filters()
     files = sorted(glob(os.path.join(root, "**", "*.jsonl"), recursive=True))
     all_sessions = {session_key(p, root) for p in files}
     needle = server.lower()
@@ -283,76 +653,33 @@ def audit(root: str, server: str, samples: int):
     total_errors = collections.Counter()
     codes: dict[str, CodeStat] = collections.defaultdict(CodeStat)
     audit_sessions: set[str] = set()
+    coverage = Coverage()
+    # Calls that matched the server, BEFORE filters.selects() scopes them down — lets
+    # the report tell "no such server" apart from "the filters excluded everything".
+    raw_matched_calls = 0
 
     for path in files:
-        session = session_key(path, root)
+        records = records_for_file(path, root)
 
-        id2parsed: dict[str, tuple[str, str]] = {}
-        id2input: dict[str, str] = {}
-        for rec in iter_records(path):
-            ts = record_ts(rec)
-            for item in message_content(rec):
-                if not (isinstance(item, dict) and item.get("type") == "tool_use"):
-                    continue
-                parsed = parse_tool_name(item.get("name") or "")
-                if not parsed:
-                    continue
-                tid = item.get("id")
-                if tid:
-                    id2parsed[tid] = parsed
-                srv, tool = parsed
-                sstat = servers[srv]
-                sstat.calls += 1
-                sstat.sessions.add(session)
-                if ts and (sstat.last_call is None or ts > sstat.last_call):
-                    sstat.last_call = ts
-                if needle and needle in srv.lower():
-                    total_calls[tool] += 1
-                    audit_sessions.add(session)
-                    if tid:
-                        raw = json.dumps(
-                            item.get("input", {}), sort_keys=True, default=str
-                        )
-                        id2input[tid] = " ".join(raw.split())[:120]
+        # Discovery-mode stats cover EVERY server and are deliberately unfiltered and
+        # unversioned: they keep their all-call denominator (see the spec).
+        for rec in records:
+            sstat = servers[rec.server]
+            sstat.calls += 1
+            sstat.sessions.add(rec.session)
+            if rec.is_error:
+                sstat.errors += 1
+            if rec.ts and (sstat.last_call is None or rec.ts > sstat.last_call):
+                sstat.last_call = rec.ts
 
-        # An error "recovers" when a later result for the same tool in the
-        # same transcript succeeds; pending holds codes awaiting that success.
-        pending: dict[str, list[str]] = collections.defaultdict(list)
-        for rec in iter_records(path):
-            ts = record_ts(rec)
-            for item in message_content(rec):
-                if not (isinstance(item, dict) and item.get("type") == "tool_result"):
-                    continue
-                parsed = id2parsed.get(item.get("tool_use_id") or "")
-                if not parsed:
-                    continue
-                srv, tool = parsed
-                text = result_text(item)
-                obj = parse_envelope(text)
-                err = is_error_result(item, obj)
-                if err:
-                    servers[srv].errors += 1
-                if not (needle and needle in srv.lower()):
-                    continue
-                if not err:
-                    for code in pending.pop(tool, []):
-                        codes[code].recovered += 1
-                    continue
-                total_errors[tool] += 1
-                code, retryable, repair = classify(text, obj)
-                stat = codes[code]
-                stat.count += 1
-                stat.sessions.add(session)
-                stat.tools[tool] += 1
-                if stat.see(ts):
-                    if retryable is not None:
-                        stat.retryable = retryable
-                    if repair:
-                        stat.repair = repair
-                stat.add_sample(
-                    ts, id2input.get(item.get("tool_use_id") or "", "?"), text, samples
-                )
-                pending[tool].append(code)
+        if not needle:
+            continue
+
+        matched = [r for r in records if needle in r.server.lower()]
+        raw_matched_calls += len(matched)
+        selected = [r for r in matched if filters.selects(r, coverage)]
+        aggregate(selected, filters, samples, codes, total_calls, total_errors,
+                  audit_sessions, coverage)
 
     return {
         "server": server,
@@ -364,11 +691,68 @@ def audit(root: str, server: str, samples: int):
         "total_calls": total_calls,
         "total_errors": total_errors,
         "codes": codes,
+        "coverage": coverage,
+        "filters": filters,
+        "raw_matched_calls": raw_matched_calls,
     }
 
 
 def sorted_codes(result):
     return sorted(result["codes"].items(), key=lambda kv: -kv[1].count)
+
+
+def errors_by_scope(result) -> collections.Counter:
+    """Errors per scope — the numerator whose denominator is coverage.calls_by_scope."""
+    total = collections.Counter()
+    for stat in result["codes"].values():
+        total.update(stat.by_scope)
+    return total
+
+
+_NUMERIC_RUN = re.compile(r"(\d+)")
+
+
+def natural_sort_key(s: str) -> list[tuple[int, object]]:
+    """Split `s` into text/number chunks so numeric runs compare BY VALUE.
+
+    A plain string sort puts "0.10.0" before "0.9.0" and "schema-10" before "schema-2",
+    which makes both version numbers and fingerprint schema ids hard to scan. Each chunk
+    is tagged (0, str) or (1, int) so chunks of different types never get compared
+    directly against each other (which would raise); only same-position, same-type
+    chunks are ever compared, and the tag alone breaks ties across types.
+
+    This is READABILITY, NOT CHRONOLOGY. It is not semver-aware: "1.0.0" sorts before
+    "1.0.0-rc1" (the prerelease lands to the RIGHT of the release it preceded), and a
+    mixed "v2.0.0"/"2.0.0" corpus orders by chunk type, not by release. Do not read
+    column order as a release timeline.
+    """
+    chunks = [c for c in _NUMERIC_RUN.split(s) if c != ""]
+    return [(1, int(c)) if c.isdigit() else (0, c) for c in chunks]
+
+
+def matrix_scopes(result) -> list[str]:
+    """The matrix's columns, derived from CALL scopes — not error scopes.
+
+    A release whose calls all succeeded has no error rows, but it still gets a column
+    (all zeros, over a real call denominator). The error scopes are unioned in purely
+    defensively; they are a subset of the call scopes by construction. UNKNOWN sorts
+    last; the rest sort in natural (numeric-aware) order, so labels like "0.9.0"/"0.10.0"
+    and "schema-3"/"schema-10" are easier to scan than under a lexicographic sort. That
+    order does NOT establish release chronology — see natural_sort_key: prereleases and
+    mixed version prefixes land wherever the chunk comparison puts them.
+    """
+    scopes = set(result["coverage"].calls_by_scope) | {
+        sc for stat in result["codes"].values() for sc in stat.by_scope
+    }
+    return sorted(scopes, key=lambda sc: (sc == UNKNOWN, natural_sort_key(sc)))
+
+
+def scope_rate(result, scope: str) -> str:
+    """One scope's error rate, over THAT scope's own calls. Never a global denominator."""
+    calls = result["coverage"].calls_by_scope.get(scope, 0)
+    if not calls:
+        return "n/a"
+    return f"{100 * errors_by_scope(result).get(scope, 0) / calls:.1f}%"
 
 
 def matched_last_call(result) -> str | None:
@@ -407,12 +791,14 @@ def to_json(result) -> str:
     codes = {
         code: {
             "count": s.count,
-            "sessions": len(s.sessions),
+            "sessions": s.session_count(),
             "recovered": s.recovered,
+            "cross_version_success": s.cross_version_success,
             "retryable": s.retryable,
             "first_seen": s.first_seen,
             "last_seen": s.last_seen,
             "tools": dict(s.tools),
+            "by_scope": dict(s.by_scope),
             "repair": s.repair,
             "samples": s.samples,
         }
@@ -442,6 +828,32 @@ def to_json(result) -> str:
                 for t in result["total_calls"]
             },
             "by_code": codes,
+            "coverage": {
+                "total_calls": result["coverage"].total_calls,
+                "attributed_calls": result["coverage"].attributed_calls,
+                "unknown": dict(result["coverage"].unknown),
+                "excluded_missing_timestamp": result["coverage"].excluded_missing_timestamp,
+                "partial": result["coverage"].partial(),
+                "group_by": result["filters"].group_by,
+                "date_scoped": result["filters"].date_scoped(),
+                # Every number above is scoped by these. Serialize them, or a consumer
+                # holding the JSON cannot tell WHICH population it is looking at:
+                # `date_scoped: true` alone loses the window, and a combined
+                # version/fingerprint/unknown scope is unreconstructable. A scoped
+                # statistic whose scope is not stated is the same failure as a
+                # denominator that is not named.
+                "active_filters": {
+                    "server_version": result["filters"].server_version,
+                    "fingerprint": result["filters"].fingerprint,
+                    "since": result["filters"].since,
+                    "until": result["filters"].until,
+                    "unknown": result["filters"].unknown,
+                },
+                # Per-scope CALL denominators and their matching numerators. A consumer
+                # can compute any per-scope rate without ever reaching for a global count.
+                "calls_by_scope": dict(result["coverage"].calls_by_scope),
+                "errors_by_scope": dict(errors_by_scope(result)),
+            },
         },
         indent=2,
     )
@@ -474,14 +886,37 @@ def to_text(result) -> str:
 
     calls = sum(result["total_calls"].values())
     errors = sum(result["total_errors"].values())
-    rate = f"{100 * errors / calls:.1f}%" if calls else "n/a"
+    # `calls` is every SELECTED call — every matched call when unscoped, but only
+    # whatever the active --server-version/--fingerprint/--since/--until/--unknown
+    # filters left in when scoped. The label must name whichever set that actually
+    # is: it must never claim "all matched calls" on a scoped run, where the true
+    # all-matched count lives in raw_matched_calls instead. The per-release rates
+    # live in the matrix, each over its own denominator.
+    active_filters = result["filters"].describe_active()
+    denom_desc = (
+        f"calls scoped to {active_filters}" if active_filters
+        else "all matched calls, attributed or not"
+    )
+    rate = f"{100 * errors / calls:.1f}% of {denom_desc}" if calls else "n/a"
     n_sess = len(result["audit_sessions"])
     out.append(f"# MCP error audit — servers matching '{result['server']}'")
     if not calls:
-        out.append(
-            "\nNo MCP tool calls matched. Run without --server to list "
-            "the servers seen in transcripts."
-        )
+        raw = result.get("raw_matched_calls", 0)
+        if raw:
+            # The server matched calls; the active scope filters excluded all of
+            # them. Say so and name the filters — conflating this with "no such
+            # server" sends the user to fix the wrong thing.
+            desc = result["filters"].describe_active() or "the active filters"
+            out.append(
+                f"\nmatched {raw} calls for this server, but 0 after scoping to "
+                f"{desc}. Loosen or drop --server-version/--fingerprint/--since/"
+                "--until/--unknown to see them."
+            )
+        else:
+            out.append(
+                "\nNo MCP tool calls matched. Run without --server to list "
+                "the servers seen in transcripts."
+            )
         return "\n".join(out)
     out.append(f"matched: {', '.join(result['matched_servers'])}")
     distinct = distinct_matches(result)
@@ -497,6 +932,89 @@ def to_text(result) -> str:
         f"last call {(matched_last_call(result) or '?')[:10]}"
     )
 
+    cov = result["coverage"]
+    dim = result["filters"].group_by
+    attributed = cov.attributed_calls
+    out.append(
+        f"coverage: {attributed}/{cov.total_calls} calls attributed to a {dim}"
+        + (f" · unattributed: {dict(cov.unknown)}" if cov.unknown else "")
+    )
+    if cov.partial():
+        # Say exactly what the report computes. The previous wording claimed every rate
+        # below was attributed-only while the sole rate printed was errors/ALL calls —
+        # and no per-scope rate existed at all.
+        unattributed = sum(cov.unknown.values())
+        out.append(
+            f"NOTE: PARTIAL — {unattributed} calls could not be attributed to a {dim}. "
+            f"Each {dim} column in the matrix below has its own denominator (its `calls` "
+            f"row), so no release's rate borrows another's calls; the unattributable ones "
+            "are isolated in the `unknown` column instead of inflating any release. The "
+            f"overall rate in the header spans {denom_desc}."
+        )
+    if result["filters"].date_scoped():
+        note = (
+            "NOTE: date-scoped, APPROXIMATE — a date is a proxy for a release. It is wrong "
+            "if you upgraded late or ran a dev tree between releases. Prefer "
+            "--server-version or --fingerprint, which are observed in the envelope."
+        )
+        if cov.excluded_missing_timestamp:
+            # These calls are NOT in total_calls/attributed_calls/unknown above — they
+            # were excluded from the report entirely, the same as any other scope
+            # exclusion, because an undated call may well have a perfectly good version.
+            # Named here so they do not vanish silently.
+            note += (
+                f" {cov.excluded_missing_timestamp} calls with no timestamp could not be "
+                "placed in the date window and were excluded from every count above "
+                "(not counted as unattributed — they may well carry a version)."
+            )
+        out.append(note)
+
+    scopes = matrix_scopes(result)
+    if scopes:
+        # Width follows the widest thing that will actually be PRINTED in the column, not
+        # just the scope label (version strings are short; fingerprints like
+        # "codex-in-claude/0.1/schema-38" are not). A cell wider than col_width silently
+        # expands past the format spec and knocks that one row out of alignment with the
+        # header — so the counts and rates have to be measured too, not assumed narrower.
+        # MIN_SCOPE_COL keeps narrow counts from crowding a short label like "1.0.0".
+        cells = [
+            str(s.by_scope.get(sc, 0)) for _c, s in sorted_codes(result) for sc in scopes
+        ]
+        cells += [str(cov.calls_by_scope.get(sc, 0)) for sc in scopes]
+        cells += [scope_rate(result, sc) for sc in scopes]
+        col_width = max(
+            MIN_SCOPE_COL,
+            max(len(sc) for sc in scopes),
+            max((len(c) for c in cells), default=0),
+        )
+        out.append(f"\n## Errors by code × {dim}")
+        header = f"{'code':<34}" + "".join(f" {sc:>{col_width}}" for sc in scopes)
+        out.append(header)
+        for code, s in sorted_codes(result):
+            row = f"{code:<34}" + "".join(
+                f" {s.by_scope.get(sc, 0):>{col_width}}" for sc in scopes
+            )
+            out.append(row)
+        out.append("-" * 34 + "".join(" " + "-" * col_width for _ in scopes))
+        # Each column's OWN denominator. Without it the report could only offer the
+        # global call count, and pinning a cross-release denominator to one release
+        # is precisely the lying statistic this tool refuses to print.
+        out.append(
+            f"{'calls':<34}"
+            + "".join(
+                f" {cov.calls_by_scope.get(sc, 0):>{col_width}}" for sc in scopes
+            )
+        )
+        out.append(f"{'err%':<34}" + "".join(f" {scope_rate(result, sc):>{col_width}}" for sc in scopes))
+        out.append(
+            f"\ncalls = calls observed at that {dim}; it is the denominator for that "
+            f"column's err% — no other {dim}'s calls are mixed in. In the `unknown` "
+            f"column those calls carry no {dim} in their own result.\n"
+            f"A zero in a code's row means NOT OBSERVED in that {dim} over that "
+            "column's calls — not a fix. This tool reads transcripts; it cannot see a "
+            "code change."
+        )
+
     out.append("\n## Per-tool")
     out.append(f"{'tool':<28} {'calls':>6} {'errs':>6}")
     for tool, n in result["total_calls"].most_common():
@@ -505,10 +1023,12 @@ def to_text(result) -> str:
     out.append(
         f"\n## Errors by code  (sess = distinct sessions out of the {n_sess} "
         "that called this server; recov = errors followed later in the same "
-        "transcript by a success of the same tool)"
+        "transcript by a success of the same tool AND scope; cross = followed "
+        "instead by a success at a different/unknown scope — indeterminate, "
+        "not recovery)"
     )
     out.append(
-        f"{'code':<34} {'count':>5} {'sess':>4} {'recov':>5} {'retry':>5}  "
+        f"{'code':<34} {'count':>5} {'sess':>4} {'recov':>5} {'cross':>5} {'retry':>5}  "
         f"{'first_seen':<10}  {'last_seen':<10}  tools"
     )
     for code, s in sorted_codes(result):
@@ -517,8 +1037,8 @@ def to_text(result) -> str:
         first = (s.first_seen or "?")[:10]
         last = (s.last_seen or "?")[:10]
         out.append(
-            f"{code:<34} {s.count:>5} {len(s.sessions):>4} {s.recovered:>5} "
-            f"{retry:>5}  {first:<10}  {last:<10}  {tools}"
+            f"{code:<34} {s.count:>5} {s.session_count():>4} {s.recovered:>5} "
+            f"{s.cross_version_success:>5} {retry:>5}  {first:<10}  {last:<10}  {tools}"
         )
         if s.repair:
             out.append(f"    repair: {s.repair}")
@@ -533,34 +1053,130 @@ def to_text(result) -> str:
     return "\n".join(out)
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--server",
+        "server",
+        nargs="?",
         default="",
-        help="MCP server name or substring (empty/omitted → discovery mode "
-        "listing all servers)",
+        help="MCP server name or substring (omit → discovery mode listing all servers)",
     )
-    parser.add_argument(
-        "--root",
-        default=os.path.expanduser("~/.claude/projects"),
-        help="Directory of session transcripts",
-    )
-    parser.add_argument(
-        "--json", action="store_true", help="Emit JSON instead of a table"
-    )
-    parser.add_argument(
-        "--samples", type=int, default=3, help="Sample error texts per code"
-    )
-    args = parser.parse_args()
+    parser.add_argument("--server", dest="server_opt", default=None,
+                        help=argparse.SUPPRESS)  # back-compat with the old invocation
+    parser.add_argument("--server-version", default=None,
+                        help="Only calls whose result reported this server release (observed)")
+    parser.add_argument("--fingerprint", default=None,
+                        help="Only calls whose result reported this contract fingerprint (observed)")
+    parser.add_argument("--since", default=None, help="Only calls STARTED on/after this date (YYYY-MM-DD; approximate)")
+    parser.add_argument("--until", default=None, help="Only calls STARTED on/before this date (YYYY-MM-DD; approximate)")
+    parser.add_argument("--group-by", choices=("version", "fingerprint"), default="version",
+                        help="Dimension for the matrix and for scope-aware recovery")
+    parser.add_argument("--unknown", choices=("include", "exclude", "only"), default="include",
+                        help="Calls whose release could not be attributed")
+    parser.add_argument("--root", default=os.path.expanduser("~/.claude/projects"),
+                        help="Directory of session transcripts")
+    parser.add_argument("--json", action="store_true", help="Emit JSON instead of a table")
+    parser.add_argument("--samples", type=int, default=3, help="Sample error texts per code")
+    parser.add_argument("--args", dest="args_string", default=None,
+                        help="Raw argument string from the slash command; re-parsed as flags")
+    return parser
+
+
+def parse_argv(argv) -> argparse.Namespace:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.args_string is not None:
+        # KNOWN, ACCEPTED RISK — SHELL INJECTION. commands/mcp-error-audit.md interpolates
+        # $ARGUMENTS into a shell string (`--args '$ARGUMENTS'`). A payload that closes the
+        # quote runs arbitrary commands:
+        #
+        #     /mcp-error-audit x' ; echo pwned #
+        #     → python3 ... --args 'x' ; echo pwned #'      (bash runs `echo pwned`)
+        #
+        # The quote rejection BELOW DOES NOT PREVENT THIS, and cannot: bash tokenizes the
+        # string before Python starts, so Python receives argv ['--args', 'x'] — no quote
+        # ever reaches this check. It is bypassed, not defeated. Its only real job is to
+        # keep a stray quote from producing a confusing shlex parse.
+        #
+        # `allowed-tools` DOES NOT GUARD THIS EITHER: `Bash(python3 …/mcp_error_audit.py:*)`
+        # is a PREFIX match, and the injected string still begins with the allowed prefix,
+        # so it matches and runs. (An earlier version of this comment claimed the allowlist
+        # was the guard. It is not; that claim was false.)
+        #
+        # The risk predates version scoping and is knowingly accepted: the only caller is
+        # the user's own slash command, typed by the user, in the user's own shell. Actually
+        # closing it means not interpolating $ARGUMENTS into a shell string at all.
+        if "'" in args.args_string or '"' in args.args_string:
+            parser.error("quotes are not allowed in the command arguments")
+        try:
+            split = shlex.split(args.args_string)
+        except ValueError as exc:
+            parser.error(f"could not parse command arguments: {exc}")
+        args = parser.parse_args(split)
+
+    if args.server_opt is not None:  # legacy --server wins when explicitly given
+        args.server = args.server_opt
 
     server = (args.server or "").strip()
     if server and not VALID_SERVER.match(server):
+        parser.error(f"invalid server {server!r}: expected characters in [A-Za-z0-9._-]")
+    args.server = server
+
+    if args.server_version and not VALID_VERSION.match(args.server_version):
+        parser.error(f"invalid --server-version {args.server_version!r}")
+    if args.fingerprint and not VALID_FINGERPRINT.match(args.fingerprint):
+        parser.error(f"invalid --fingerprint {args.fingerprint!r}")
+    # Shape alone is not enough: `2026-02-31` matches the regex and is not a date. Parse
+    # a real calendar date, and reject an inverted window — both otherwise sail through
+    # and return zero rows that read exactly like an honest "your corpus has none".
+    parsed_dates: dict[str, datetime.date] = {}
+    for flag, value in (("--since", args.since), ("--until", args.until)):
+        if not value:
+            continue
+        if not VALID_DATE.match(value):
+            parser.error(f"invalid {flag} {value!r}: expected YYYY-MM-DD")
+        try:
+            parsed_dates[flag] = datetime.date.fromisoformat(value)
+        except ValueError:
+            parser.error(f"invalid {flag} {value!r}: not a real calendar date")
+    if parsed_dates.get("--since", datetime.date.min) > parsed_dates.get(
+        "--until", datetime.date.max
+    ):
         parser.error(
-            f"invalid --server value {server!r}: expected characters in [A-Za-z0-9._-]"
+            f"--since {args.since} is after --until {args.until}: an inverted window "
+            "always yields zero results. Swap them."
         )
 
-    result = audit(args.root, server, args.samples)
+    # --unknown is defined against the ACTIVE dimension (Filters.selects and Coverage both
+    # ask "does this call carry a value for group_by?"), so only a filter on THAT dimension
+    # is vacuous with `only`. The other dimension's filter is a legitimate, non-empty query:
+    #   --group-by version --unknown only --fingerprint fp-1
+    #     → "calls from fingerprint fp-1 that stamp no version" — exactly the corpus today.
+    # Rejecting it too, as this check first did, refused a question the report can answer.
+    identity_filter = (
+        args.server_version if args.group_by == "version" else args.fingerprint
+    )
+    if args.unknown == "only" and identity_filter:
+        parser.error(
+            f"--unknown only combined with a {args.group_by} filter always yields zero "
+            f"results: an unattributed record can never match a specific {args.group_by}. "
+            f"Drop --unknown only, or drop the {args.group_by} filter."
+        )
+    return args
+
+
+def main() -> None:
+    args = parse_argv(None)
+    filters = Filters(
+        server_version=args.server_version,
+        fingerprint=args.fingerprint,
+        since=args.since,
+        until=args.until,
+        group_by=args.group_by,
+        unknown=args.unknown,
+    )
+    result = audit(args.root, args.server, args.samples, filters)
     print(to_json(result) if args.json else to_text(result))
 
 

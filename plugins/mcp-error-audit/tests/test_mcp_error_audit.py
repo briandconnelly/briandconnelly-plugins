@@ -1,8 +1,11 @@
 """Tests for mcp_error_audit.py, run via: uvx pytest plugins/mcp-error-audit/tests/ -q"""
 
+import collections
 import json
 import os
 import sys
+
+import pytest
 
 sys.path.insert(
     0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts")
@@ -200,7 +203,12 @@ def test_samples_are_recent_dated_and_carry_inputs(tmp_path):
     result = mea.audit(root, "srv", 3)
     stat = result["codes"]["not_found"]
     assert stat.count == 5
-    assert stat.recovered == 1
+    # This fixture's envelopes carry NO version, so every call's scope is `unknown`.
+    # This assertion previously read `stat.recovered == 1` — it encoded the bug that
+    # unknown == unknown counts as a same-release recovery. Two calls that each carry
+    # no version may be from different releases; the honest answer is indeterminate.
+    assert stat.recovered == 0
+    assert stat.cross_version_success == 1
     assert stat.first_seen.startswith("2026-06-01")
     assert stat.last_seen.startswith("2026-07-04")
     # 5 errors, limit 3 → the 3 most recent survive
@@ -277,3 +285,1250 @@ def test_matching_is_case_insensitive(tmp_path):
     result = mea.audit(root, "SRV", 3)
     assert result["matched_servers"] == ["srv"]
     assert sum(result["total_calls"].values()) == 6
+
+
+# --- version / fingerprint extraction ---------------------------------------
+
+
+def test_extract_version_precedence():
+    # meta.server_version wins over every other shape
+    obj = {
+        "meta": {"server_version": "0.10.0", "server": {"version": "9.9.9"}},
+        "server_version": "8.8.8",
+        "server": {"version": "7.7.7"},
+    }
+    assert mea.extract_version(obj) == "0.10.0"
+    # top-level server_version is next (46% of real results carry no `meta`)
+    assert mea.extract_version({"server_version": "0.9.0"}) == "0.9.0"
+    # then the nested object forms
+    assert mea.extract_version({"meta": {"server": {"version": "0.8.0"}}}) == "0.8.0"
+    assert mea.extract_version({"server": {"version": "0.7.0"}}) == "0.7.0"
+    assert mea.extract_version({}) is None
+
+
+def test_extract_version_ignores_unrelated_version_keys():
+    """Negative control: the regex trap.
+
+    codex-in-claude emits `codex_version` — the version of the Codex CLI it shells
+    out to, NOT its own. A heuristic matching version-ish key names would report on
+    the wrong software. Extraction must be exact-path only.
+    """
+    obj = {
+        "codex_version": "codex-cli 0.144.1",
+        "cache_client_version": "0.144.1",
+        "version_supported": True,
+        "meta": {"fingerprint": "srv/0.1/schema-38"},
+    }
+    assert mea.extract_version(obj) is None
+
+
+def test_extract_fingerprint_both_shapes():
+    assert mea.extract_fingerprint({"meta": {"fingerprint": "a/1"}}) == "a/1"
+    assert mea.extract_fingerprint({"fingerprint": "b/2"}) == "b/2"
+    assert mea.extract_fingerprint({"meta": {"fingerprint": "a/1"}, "fingerprint": "b/2"}) == "a/1"
+    assert mea.extract_fingerprint({}) is None
+
+
+def test_extract_rejects_non_string_and_empty():
+    assert mea.extract_version({"server_version": ""}) is None
+    assert mea.extract_version({"server_version": 10}) is None
+    assert mea.extract_version({"meta": "not-a-dict"}) is None
+
+
+# --- call records -----------------------------------------------------------
+
+
+def test_records_attribute_version_and_fingerprint(tmp_path):
+    root = str(tmp_path)
+    body = json.dumps(
+        {"ok": True, "meta": {"server_version": "0.10.0", "fingerprint": "srv/0.1/schema-38"}}
+    )
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {"a": 1}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", body, "2026-07-01T00:00:01Z"),
+        ],
+    )
+    recs = mea.records_for_file(os.path.join(root, "proj", "s1.jsonl"), root)
+    assert len(recs) == 1
+    assert recs[0].tool == "go"
+    assert recs[0].version == "0.10.0"
+    assert recs[0].fingerprint == "srv/0.1/schema-38"
+    assert recs[0].unknown_reason is None
+    assert recs[0].is_error is False
+
+
+def test_records_unknown_reasons(tmp_path):
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            # no paired result at all (aborted / interrupted)
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            # a result with no JSON envelope
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+            tool_result("t2", "MCP error -32000: Connection closed", "2026-07-01T00:01:01Z", True),
+            # a well-formed envelope that carries no version
+            tool_use("t3", "mcp__srv__go", {}, "2026-07-01T00:02:00Z"),
+            tool_result("t3", json.dumps({"ok": True, "data": 1}), "2026-07-01T00:02:01Z"),
+        ],
+    )
+    recs = {r.input_id: r for r in mea.records_for_file(os.path.join(root, "proj", "s1.jsonl"), root)}
+    assert recs["t1"].unknown_reason == "no_result"
+    assert recs["t2"].unknown_reason == "unparseable_result"
+    assert recs["t3"].unknown_reason == "not_emitted"
+    assert all(r.version is None for r in recs.values())
+
+
+def test_unparseable_error_is_still_an_error(tmp_path):
+    """Attribution and classification are orthogonal.
+
+    A transport drop carries no envelope, so its release is unknown — but it is still a
+    REAL error and must stay in the error totals. Sweeping it into an 'unknown' bucket
+    that reads as 'not an error' would erase genuine transport failures.
+    """
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", "MCP error -32000: Connection closed", "2026-07-01T00:00:01Z", True),
+        ],
+    )
+    (rec,) = mea.records_for_file(os.path.join(root, "proj", "s1.jsonl"), root)
+    assert rec.is_error is True
+    assert rec.code == "transport_connection_closed"
+    assert rec.version is None
+    assert rec.unknown_reason == "unparseable_result"
+
+
+def test_records_are_in_result_order_with_unpaired_last(tmp_path):
+    root = str(tmp_path)
+    ok = json.dumps({"ok": True, "meta": {"server_version": "1.0.0"}})
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+            tool_use("t3", "mcp__srv__go", {}, "2026-07-01T00:02:00Z"),  # never answered
+            tool_result("t2", ok, "2026-07-01T00:03:00Z"),
+            tool_result("t1", ok, "2026-07-01T00:04:00Z"),
+        ],
+    )
+    recs = mea.records_for_file(os.path.join(root, "proj", "s1.jsonl"), root)
+    assert [r.input_id for r in recs] == ["t2", "t1", "t3"]
+
+
+def test_tool_use_without_id_is_counted_as_no_result(tmp_path):
+    """A tool_use with valid MCP name but no id must be counted, not dropped.
+
+    This is a regression test for the fix: previously dropped calls are now counted
+    toward discovery-mode stats, recorded with unknown_reason='no_result'.
+    """
+    root = str(tmp_path)
+    # Construct a tool_use dict without the "id" key
+    tool_use_no_id = {
+        "timestamp": "2026-07-01T00:00:00Z",
+        "message": {
+            "content": [{"type": "tool_use", "name": "mcp__srv__do_thing", "input": {}}]
+        },
+    }
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [tool_use_no_id],
+    )
+
+    # Test 1: records_for_file returns a record with unknown_reason='no_result'
+    recs = mea.records_for_file(os.path.join(root, "proj", "s1.jsonl"), root)
+    assert len(recs) == 1
+    assert recs[0].server == "srv"
+    assert recs[0].tool == "do_thing"
+    assert recs[0].unknown_reason == "no_result"
+
+    # Test 2: discovery mode counts it in servers[srv].calls
+    result = mea.audit(root, "srv", 3)
+    srv_stat = result["servers"]["srv"]
+    assert srv_stat.calls == 1  # Must be counted in discovery mode
+
+
+# --- scope-aware recovery ---------------------------------------------------
+
+
+def _versioned_error(code, version):
+    return json.dumps(
+        {"ok": False, "error": {"code": code, "message": "boom", "retryable": False},
+         "meta": {"server_version": version}}
+    )
+
+
+def _versioned_ok(version):
+    return json.dumps({"ok": True, "meta": {"server_version": version}})
+
+
+def test_recovery_requires_the_same_version(tmp_path):
+    """An error on v1 followed by a success on v2 is NOT recovery for v1.
+
+    The environment changed underneath; the honest answer is indeterminate.
+    """
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", _versioned_error("boom_code", "1.0.0"), "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+            tool_result("t2", _versioned_ok("2.0.0"), "2026-07-01T00:01:01Z"),
+        ],
+    )
+    result = mea.audit(root, "srv", 3)
+    stat = result["codes"]["boom_code"]
+    assert stat.recovered == 0
+    assert stat.cross_version_success == 1
+
+
+def test_recovery_counts_within_the_same_version(tmp_path):
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", _versioned_error("boom_code", "1.0.0"), "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+            tool_result("t2", _versioned_ok("1.0.0"), "2026-07-01T00:01:01Z"),
+        ],
+    )
+    stat = mea.audit(root, "srv", 3)["codes"]["boom_code"]
+    assert stat.recovered == 1
+    assert stat.cross_version_success == 0
+
+
+def _pair(root, err_body, ok_body):
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", err_body, "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+            tool_result("t2", ok_body, "2026-07-01T00:01:01Z"),
+        ],
+    )
+
+
+def test_a_success_at_an_unknown_scope_is_never_recovery(tmp_path):
+    """The spec: "A later success at a different OR UNKNOWN scope does not count as
+    recovery." aggregate() compared pend_scope == scope, so two calls that BOTH carry no
+    version compared equal — unknown == unknown — and the success was credited as a
+    same-release recovery.
+
+    Since nothing stamps a version yet, EVERY call today is version-unknown: scope-aware
+    recovery was inert by default, `recov` silently reverted to the old unscoped
+    semantics, and `cross` read a reassuring 0.
+    """
+    unknown_err = envelope("boom_code")  # well-formed envelope, no version
+    unknown_ok = json.dumps({"ok": True})
+
+    # unknown → unknown: NOT a recovery. Both calls could be from different releases.
+    root = str(tmp_path / "uu")
+    _pair(root, unknown_err, unknown_ok)
+    stat = mea.audit(root, "srv", 3)["codes"]["boom_code"]
+    assert stat.recovered == 0
+    assert stat.cross_version_success == 1
+
+    # known error → unknown success: the success proves nothing about 1.0.0.
+    root = str(tmp_path / "ku")
+    _pair(root, _versioned_error("boom_code", "1.0.0"), unknown_ok)
+    stat = mea.audit(root, "srv", 3)["codes"]["boom_code"]
+    assert stat.recovered == 0
+    assert stat.cross_version_success == 1
+
+    # unknown error → known success: the error is not "recovered" by anything.
+    root = str(tmp_path / "uk")
+    _pair(root, unknown_err, _versioned_ok("1.0.0"))
+    stat = mea.audit(root, "srv", 3)["codes"]["boom_code"]
+    assert stat.recovered == 0
+    assert stat.cross_version_success == 1
+
+    # POSITIVE CONTROL: recovery is still reachable — an attributed scope recovers itself.
+    # (Otherwise `recovered == 0` above would be indistinguishable from a dead counter.)
+    root = str(tmp_path / "kk")
+    _pair(root, _versioned_error("boom_code", "1.0.0"), _versioned_ok("1.0.0"))
+    stat = mea.audit(root, "srv", 3)["codes"]["boom_code"]
+    assert stat.recovered == 1
+    assert stat.cross_version_success == 0
+
+    # And under --group-by fingerprint, a fingerprinted corpus recovers normally: the
+    # rule is about UNATTRIBUTED scopes, not about versions specifically.
+    root = str(tmp_path / "fp")
+    fp_err = json.dumps(
+        {"ok": False, "error": {"code": "boom_code", "message": "b", "retryable": False},
+         "meta": {"fingerprint": "srv/0.1/schema-38"}}
+    )
+    fp_ok = json.dumps({"ok": True, "meta": {"fingerprint": "srv/0.1/schema-38"}})
+    _pair(root, fp_err, fp_ok)
+    by_fp = mea.audit(root, "srv", 3, mea.Filters(group_by="fingerprint"))["codes"]["boom_code"]
+    assert by_fp.recovered == 1
+    by_ver = mea.audit(root, "srv", 3, mea.Filters(group_by="version"))["codes"]["boom_code"]
+    assert by_ver.recovered == 0  # same corpus, no version: indeterminate
+    assert by_ver.cross_version_success == 1
+
+
+def test_multi_version_folded_session_attributes_each_call(tmp_path):
+    """A session can span an upgrade: the parent transcript and its subagent sidechain
+    fold into ONE session, but each call keeps its own version."""
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "abc.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", _versioned_error("boom_code", "1.0.0"), "2026-07-01T00:00:01Z", True),
+        ],
+    )
+    write_jsonl(
+        os.path.join(root, "proj", "abc", "subagents", "agent-1.jsonl"),
+        [
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-02T00:00:00Z"),
+            tool_result("t2", _versioned_error("boom_code", "2.0.0"), "2026-07-02T00:00:01Z", True),
+        ],
+    )
+    result = mea.audit(root, "srv", 3)
+    stat = result["codes"]["boom_code"]
+    assert stat.by_scope == collections.Counter({"1.0.0": 1, "2.0.0": 1})
+    # one folded session, but two scopes within it — session counts must not imply
+    # a single version
+    assert len(result["audit_sessions"]) == 1
+    assert stat.session_count() == 1
+    assert stat.sessions == {("1.0.0", "proj/abc"), ("2.0.0", "proj/abc")}
+
+
+# --- filters ----------------------------------------------------------------
+
+
+def _two_version_corpus(root):
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", _versioned_error("old_code", "1.0.0"), "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-10T00:00:00Z"),
+            tool_result("t2", _versioned_error("new_code", "2.0.0"), "2026-07-10T00:00:01Z", True),
+        ],
+    )
+
+
+def test_filter_by_server_version(tmp_path):
+    root = str(tmp_path)
+    _two_version_corpus(root)
+    result = mea.audit(root, "srv", 3, mea.Filters(server_version="2.0.0"))
+    assert set(result["codes"]) == {"new_code"}
+    # POSITIVE CONTROL: the same filter must be able to surface the other version.
+    # A filter that matches nothing and a filter that is broken look identical.
+    other = mea.audit(root, "srv", 3, mea.Filters(server_version="1.0.0"))
+    assert set(other["codes"]) == {"old_code"}
+
+
+def test_filter_by_fingerprint(tmp_path):
+    root = str(tmp_path)
+    body = json.dumps(
+        {"ok": False, "error": {"code": "fp_code", "message": "b", "retryable": False},
+         "meta": {"fingerprint": "srv/0.1/schema-38"}}
+    )
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", body, "2026-07-01T00:00:01Z", True),
+        ],
+    )
+    hit = mea.audit(root, "srv", 3, mea.Filters(fingerprint="srv/0.1/schema-38"))
+    assert set(hit["codes"]) == {"fp_code"}
+    miss = mea.audit(root, "srv", 3, mea.Filters(fingerprint="srv/0.1/schema-1"))
+    assert set(miss["codes"]) == set()
+
+
+def test_date_filter_uses_the_call_timestamp_not_the_result(tmp_path):
+    """A call that STARTS inside the window is counted and classified even when its
+    result lands outside it. Filtering the two records independently would drop the
+    tool_use while keeping its result (or vice versa) and manufacture phantom
+    `no_result` calls — corrupting the denominator."""
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            # starts inside the window, answers after it
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-05T23:59:00Z"),
+            tool_result("t1", _versioned_error("inside", "1.0.0"), "2026-07-06T00:30:00Z", True),
+            # starts outside the window, answers inside it
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-04T00:00:00Z"),
+            tool_result("t2", _versioned_error("outside", "1.0.0"), "2026-07-05T00:00:00Z", True),
+        ],
+    )
+    result = mea.audit(root, "srv", 3, mea.Filters(since="2026-07-05", until="2026-07-05"))
+    assert set(result["codes"]) == {"inside"}
+
+
+def test_date_filter_excludes_undated_calls_without_filing_it_as_unattributed(tmp_path):
+    """An undated call under a date filter is SCOPE-EXCLUDED, not attribution-failed.
+
+    It may carry a perfectly good version (as this one does: `undated_error` is
+    `_versioned_error(..., "1.0.0")`) — it is simply outside what a date filter can
+    place in a window. Filing it under coverage.unknown["missing_timestamp"] claimed
+    attribution failed when it plainly didn't, and made a fully-attributed corpus
+    print a false PARTIAL note. It must be excluded from every coverage count, exactly
+    like every other filter exclusion (version/fingerprint mismatch, --unknown
+    exclude/only) — none of which touch coverage either — and reported separately so
+    it doesn't vanish silently.
+    """
+    root = str(tmp_path)
+    # Build a corpus with both dated and undated calls inside the window
+    records = [
+        # dated call inside the window
+        tool_use("t1", "mcp__srv__go", {}, "2026-07-05T00:00:00Z"),
+        tool_result("t1", _versioned_error("dated_error", "1.0.0"), "2026-07-05T00:00:01Z", True),
+        # dated call inside the window that succeeds
+        tool_use("t2", "mcp__srv__go", {}, "2026-07-05T10:00:00Z"),
+        tool_result("t2", _versioned_ok("1.0.0"), "2026-07-05T10:00:01Z"),
+    ]
+    # undated call cannot be placed in a window — but it DOES carry a version
+    rec_use = tool_use("t3", "mcp__srv__go", {}, "2026-07-05T12:00:00Z")
+    del rec_use["timestamp"]
+    records.extend([rec_use, tool_result("t3", _versioned_error("undated_error", "1.0.0"), "2026-07-05T12:00:01Z", True)])
+
+    write_jsonl(os.path.join(root, "proj", "s1.jsonl"), records)
+    result = mea.audit(root, "srv", 3, mea.Filters(since="2026-07-05"))
+
+    # Verify the invariant: total_calls == attributed_calls + sum(unknown.values())
+    cov = result["coverage"]
+    assert cov.total_calls == cov.attributed_calls + sum(cov.unknown.values()), \
+        f"Invariant broken: {cov.total_calls} != {cov.attributed_calls} + {sum(cov.unknown.values())}"
+
+    # The undated call is excluded from coverage entirely — not counted as unattributed.
+    assert cov.unknown["missing_timestamp"] == 0
+    assert cov.total_calls == 2  # only the two dated calls
+    assert cov.attributed_calls == 2  # both dated calls have versions; nothing is unattributed
+    assert cov.partial() is False  # a fully-attributed corpus must not read as PARTIAL
+
+    # It is tracked separately, so it doesn't vanish silently.
+    assert cov.excluded_missing_timestamp == 1
+
+    # Verify the error from the dated call is in the codes (undated error is excluded)
+    assert set(result["codes"]) == {"dated_error"}
+
+    # The text report must say so, outside of any PARTIAL note (there is none here).
+    text = mea.to_text(result)
+    assert "PARTIAL" not in text
+    assert "1 calls with no timestamp" in text
+    # Verify the JSON output carries the excluded_missing_timestamp key.
+    data = json.loads(mea.to_json(result))
+    assert data["coverage"]["excluded_missing_timestamp"] == 1
+
+
+def _fingerprint_only_corpus(root):
+    """The real corpus today: every call carries a fingerprint, none carries a version."""
+    fp_err = json.dumps(
+        {"ok": False, "error": {"code": "fp_code", "message": "b", "retryable": False},
+         "meta": {"fingerprint": "srv/0.1/schema-38"}}
+    )
+    fp_ok = json.dumps({"ok": True, "meta": {"fingerprint": "srv/0.1/schema-38"}})
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", fp_err, "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+            tool_result("t2", fp_ok, "2026-07-01T00:01:01Z"),
+        ],
+    )
+
+
+def test_unknown_filter_is_dimension_aware(tmp_path):
+    """`--unknown` must judge unknown-ness on the ACTIVE dimension, exactly as Coverage does.
+
+    Filters.selects() tested rec.unknown_reason ("was there any envelope?") while Coverage
+    tested scope != UNKNOWN ("does this call carry a value for the dimension I am grouping
+    by?"). On a fingerprint-only corpus — which is the real corpus today, since no server
+    stamps a version yet — the two definitions diverge completely:
+
+      --group-by version --unknown exclude  was a silent NO-OP (nothing has an unknown_reason)
+      --group-by version --unknown only     returned ZERO calls, while coverage in the same
+                                            run reported those very calls as unattributed.
+
+    The spec says `only` exists to make the unknown bucket inspectable rather than a silent
+    drain. One definition, dimension-aware, everywhere.
+    """
+    root = str(tmp_path)
+    _fingerprint_only_corpus(root)
+
+    # Grouping by VERSION: nothing carries a version, so every call is unknown.
+    v_only = mea.audit(root, "srv", 3, mea.Filters(group_by="version", unknown="only"))
+    assert v_only["coverage"].total_calls == 2
+    assert set(v_only["codes"]) == {"fp_code"}  # the unknown bucket is inspectable
+    assert v_only["coverage"].attributed_calls == 0
+
+    v_excl = mea.audit(root, "srv", 3, mea.Filters(group_by="version", unknown="exclude"))
+    assert v_excl["coverage"].total_calls == 0  # was 2: a silent no-op
+    assert set(v_excl["codes"]) == set()
+
+    # Grouping by FINGERPRINT: every call carries one, so the buckets invert.
+    f_only = mea.audit(root, "srv", 3, mea.Filters(group_by="fingerprint", unknown="only"))
+    assert f_only["coverage"].total_calls == 0
+    f_excl = mea.audit(root, "srv", 3, mea.Filters(group_by="fingerprint", unknown="exclude"))
+    assert f_excl["coverage"].total_calls == 2
+    assert f_excl["coverage"].attributed_calls == 2
+
+    # The invariant holds on every one of these paths.
+    for res in (v_only, v_excl, f_only, f_excl):
+        cov = res["coverage"]
+        assert cov.total_calls == cov.attributed_calls + sum(cov.unknown.values())
+
+    # POSITIVE CONTROL: `exclude` under group_by=version is not vacuously empty because
+    # the filter is broken — the same flag surfaces calls when a version IS present.
+    _two_version_corpus(str(tmp_path / "versioned"))
+    ok = mea.audit(str(tmp_path / "versioned"), "srv", 3,
+                   mea.Filters(group_by="version", unknown="exclude"))
+    assert ok["coverage"].total_calls == 2
+
+
+def test_unknown_only_and_exclude(tmp_path):
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", _versioned_error("known", "1.0.0"), "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:02:00Z"),
+            tool_result("t2", "Connection closed", "2026-07-01T00:02:01Z", True),
+        ],
+    )
+    only = mea.audit(root, "srv", 3, mea.Filters(unknown="only"))
+    assert set(only["codes"]) == {"transport_connection_closed"}
+    excl = mea.audit(root, "srv", 3, mea.Filters(unknown="exclude"))
+    assert set(excl["codes"]) == {"known"}
+
+
+# --- coverage and the matrix ------------------------------------------------
+
+
+def test_coverage_attribution_is_dimension_aware(tmp_path):
+    """Coverage attribution must be relative to the ACTIVE group_by dimension.
+
+    A call whose envelope carries only a fingerprint (no server_version) is a
+    perfectly well-formed result — but it is NOT attributed under
+    group_by='version', even though rec.unknown_reason is None (an envelope was
+    present). Regression for: the text report claimed calls were "attributed to
+    a version" while the by-version matrix showed every one of them at scope
+    'unknown' — an outright contradiction. Real-corpus shape: servers that only
+    ever emit a fingerprint, never a server_version.
+    """
+    root = str(tmp_path)
+    fp_only = json.dumps(
+        {
+            "ok": False,
+            "error": {"code": "fp_code", "message": "b", "retryable": False},
+            "meta": {"fingerprint": "srv/0.1/schema-38"},
+        }
+    )
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", fp_only, "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+            tool_result("t2", fp_only, "2026-07-01T00:01:01Z", True),
+        ],
+    )
+
+    by_version = mea.audit(root, "srv", 3, mea.Filters(group_by="version"))
+    cov_v = by_version["coverage"]
+    assert cov_v.attributed_calls == 0
+    assert cov_v.unknown == {"not_emitted": 2}
+    assert cov_v.total_calls == cov_v.attributed_calls + sum(cov_v.unknown.values())
+    # The matrix must AGREE with coverage: every call's version-scope is unknown.
+    assert sorted({sc for s in by_version["codes"].values() for sc in s.by_scope}) == [
+        "unknown"
+    ]
+
+    by_fp = mea.audit(root, "srv", 3, mea.Filters(group_by="fingerprint"))
+    cov_fp = by_fp["coverage"]
+    assert cov_fp.attributed_calls == 2
+    assert cov_fp.unknown == {}
+    assert cov_fp.total_calls == cov_fp.attributed_calls + sum(cov_fp.unknown.values())
+    assert sorted(
+        {sc for s in by_fp["codes"].values() for sc in s.by_scope}
+    ) == ["srv/0.1/schema-38"]
+
+
+def test_rate_uses_attributed_calls_and_flags_partial(tmp_path):
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", _versioned_error("known", "1.0.0"), "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+            tool_result("t2", "Connection closed", "2026-07-01T00:01:01Z", True),
+        ],
+    )
+    result = mea.audit(root, "srv", 3)
+    cov = result["coverage"]
+    assert cov.total_calls == 2
+    assert cov.attributed_calls == 1
+    assert cov.unknown["unparseable_result"] == 1
+    assert cov.partial() is True
+
+    data = json.loads(mea.to_json(result))
+    assert data["coverage"]["attributed_calls"] == 1
+    assert data["coverage"]["partial"] is True
+    text = mea.to_text(result)
+    assert "partial" in text.lower()
+
+
+def _mixed_attribution_corpus(root):
+    """1.0.0: 2 calls, 1 error (50%). No envelope: 3 calls, 1 error (33.3%).
+
+    Overall: 2 errors / 5 calls = 40.0% — a figure that belongs to NO release.
+    """
+    records = [
+        tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+        tool_result("t1", _versioned_error("known", "1.0.0"), "2026-07-01T00:00:01Z", True),
+        tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+        tool_result("t2", _versioned_ok("1.0.0"), "2026-07-01T00:01:01Z"),
+        tool_use("t3", "mcp__srv__go", {}, "2026-07-01T00:02:00Z"),
+        tool_result("t3", "Connection closed", "2026-07-01T00:02:01Z", True),
+        tool_use("t4", "mcp__srv__go", {}, "2026-07-01T00:03:00Z"),
+        tool_result("t4", "plain text, no envelope", "2026-07-01T00:03:01Z"),
+        tool_use("t5", "mcp__srv__go", {}, "2026-07-01T00:04:00Z"),
+        tool_result("t5", "plain text, no envelope", "2026-07-01T00:04:01Z"),
+    ]
+    write_jsonl(os.path.join(root, "proj", "s1.jsonl"), records)
+
+
+def test_header_rate_is_labeled_as_spanning_all_calls(tmp_path):
+    """The ONE rate printed was errors/ALL calls, under a note claiming the opposite.
+
+    The header rate (2/5 = 40.0%) includes unattributed calls. It is fine to print —
+    but only labeled as what it is. It must NOT sit under a note asserting that "rates
+    below are computed over attributed calls only", because that describes a
+    computation the report never performed.
+    """
+    root = str(tmp_path)
+    _mixed_attribution_corpus(root)
+    text = mea.to_text(mea.audit(root, "srv", 3))
+    header = next(ln for ln in text.splitlines() if ln.startswith("scanned "))
+    assert "2 errors (40.0% of all matched calls, attributed or not)" in header
+    # The old note claimed the rates were attributed-only. They were not, and there
+    # were no per-scope rates at all. That exact sentence must be gone.
+    assert "computed over attributed calls only" not in text
+
+
+def test_header_rate_label_matches_denominator_under_server_version_scope(tmp_path):
+    """Regression for F1: `--server-version` narrows `calls` to just that version's
+    calls — every one of them attributed by construction — but the header kept the
+    unscoped label "all matched calls, attributed or not" regardless. The label must
+    name the set `calls` actually is.
+    """
+    root = str(tmp_path)
+    _two_version_corpus(root)  # 1.0.0: 1 call/1 error. 2.0.0: 1 call/1 error.
+    text = mea.to_text(mea.audit(root, "srv", 3, mea.Filters(server_version="1.0.0")))
+    header = next(ln for ln in text.splitlines() if ln.startswith("scanned "))
+    assert "1 calls · 1 errors (100.0% of calls scoped to server-version 1.0.0)" in header
+    # It must NOT claim to span every matched call — only 1.0.0's.
+    assert "all matched calls" not in header
+
+
+def test_header_rate_label_matches_denominator_under_unknown_exclude(tmp_path):
+    """`--unknown exclude` narrows `calls` to attributed-only — the exact inverse of
+    the old unscoped label ("attributed or not"). The label must say so.
+    """
+    root = str(tmp_path)
+    _mixed_attribution_corpus(root)  # 1.0.0: 2 calls/1 error. unattributed: 3 calls/1 error.
+    text = mea.to_text(mea.audit(root, "srv", 3, mea.Filters(unknown="exclude")))
+    header = next(ln for ln in text.splitlines() if ln.startswith("scanned "))
+    assert "2 calls · 1 errors (50.0% of calls scoped to unknown=exclude)" in header
+    assert "all matched calls" not in header
+
+
+def test_header_rate_label_matches_denominator_under_unknown_only(tmp_path):
+    """`--unknown only` narrows `calls` to entirely UNATTRIBUTED calls — the opposite
+    of "attributed or not" too, just from the other side.
+    """
+    root = str(tmp_path)
+    _mixed_attribution_corpus(root)
+    text = mea.to_text(mea.audit(root, "srv", 3, mea.Filters(unknown="only")))
+    header = next(ln for ln in text.splitlines() if ln.startswith("scanned "))
+    assert "3 calls · 1 errors (33.3% of calls scoped to unknown=only)" in header
+    assert "all matched calls" not in header
+    # Pin the PARTIAL note's closing sentence: it must name the scoped denominator.
+    assert "header spans calls scoped to unknown=only." in text
+
+
+def test_header_rate_label_matches_denominator_under_date_scope(tmp_path):
+    """`--since`/`--until` narrow `calls` to just the date window's calls."""
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-05T00:00:00Z"),
+            tool_result("t1", _versioned_error("dated_error", "1.0.0"), "2026-07-05T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-05T10:00:00Z"),
+            tool_result("t2", _versioned_ok("1.0.0"), "2026-07-05T10:00:01Z"),
+        ],
+    )
+    text = mea.to_text(mea.audit(root, "srv", 3, mea.Filters(since="2026-07-05")))
+    header = next(ln for ln in text.splitlines() if ln.startswith("scanned "))
+    assert "2 calls · 1 errors (50.0% of calls scoped to since 2026-07-05)" in header
+    assert "all matched calls" not in header
+
+
+def test_per_scope_rates_use_that_scopes_own_denominator(tmp_path):
+    """Every per-scope rate divides by THAT scope's calls — never the global count."""
+    root = str(tmp_path)
+    _mixed_attribution_corpus(root)
+    result = mea.audit(root, "srv", 3)
+    text = mea.to_text(result)
+    lines = text.splitlines()
+    header_idx = lines.index("## Errors by code × version")
+
+    calls_row = next(ln for ln in lines[header_idx + 1 :] if ln.startswith("calls"))
+    rate_row = next(ln for ln in lines[header_idx + 1 :] if ln.startswith("err%"))
+    assert calls_row.split() == ["calls", "2", "3"]
+    # 1/2 at 1.0.0 and 1/3 unattributed. Neither is the global 40.0%.
+    assert rate_row.split() == ["err%", "50.0%", "33.3%"]
+
+    assert mea.scope_rate(result, "1.0.0") == "50.0%"
+    data = json.loads(mea.to_json(result))
+    assert data["coverage"]["calls_by_scope"] == {"1.0.0": 2, "unknown": 3}
+    assert data["coverage"]["errors_by_scope"] == {"1.0.0": 1, "unknown": 1}
+
+
+def test_partial_note_describes_what_the_report_actually_does(tmp_path):
+    """The PARTIAL note must describe the report's real computation, not a fiction."""
+    root = str(tmp_path)
+    _mixed_attribution_corpus(root)
+    text = mea.to_text(mea.audit(root, "srv", 3))
+    note = next(ln for ln in text.splitlines() if ln.startswith("NOTE: PARTIAL"))
+    assert "3 calls could not be attributed to a version" in note
+    # It must point at the real mechanism: per-column denominators, unknown isolated.
+    assert "own denominator" in note and "unknown" in note
+
+    # And when EVERY call is attributed, there is nothing partial to warn about.
+    clean = str(tmp_path / "clean")
+    _clean_release_corpus(clean)
+    assert "PARTIAL" not in mea.to_text(mea.audit(clean, "srv", 3))
+
+
+def test_matrix_shows_code_by_version(tmp_path):
+    root = str(tmp_path)
+    _two_version_corpus(root)
+    result = mea.audit(root, "srv", 3)
+    data = json.loads(mea.to_json(result))
+    assert data["by_code"]["old_code"]["by_scope"] == {"1.0.0": 1}
+    assert data["by_code"]["new_code"]["by_scope"] == {"2.0.0": 1}
+
+    text = mea.to_text(result)
+    # Structure unique to the matrix: its section header must be present.
+    assert "## Errors by code × version" in text
+    lines = text.splitlines()
+    header_idx = lines.index("## Errors by code × version")
+    header_row = lines[header_idx + 1]
+    # Header row carries exactly the two scope labels, in order (tokenized by
+    # whitespace: if columns ran together, this would collapse to one merged
+    # token instead of two).
+    assert header_row.split() == ["code", "1.0.0", "2.0.0"]
+
+    old_code_row = next(ln for ln in lines[header_idx + 2 :] if ln.startswith("old_code"))
+    # old_code was only observed at 1.0.0 — its 2.0.0 column must show the
+    # NOT-OBSERVED zero, not be missing or blank.
+    assert old_code_row.split() == ["old_code", "1", "0"]
+
+    new_code_row = next(ln for ln in lines[header_idx + 2 :] if ln.startswith("new_code"))
+    assert new_code_row.split() == ["new_code", "0", "1"]
+
+
+def _clean_release_corpus(root):
+    """1.0.0: one error, no clean calls. 2.0.0: twenty clean calls, zero errors."""
+    records = [
+        tool_use("t0", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+        tool_result("t0", _versioned_error("old_code", "1.0.0"), "2026-07-01T00:00:01Z", True),
+    ]
+    for i in range(20):
+        records.append(tool_use(f"v{i}", "mcp__srv__go", {}, f"2026-07-10T00:{i:02d}:00Z"))
+        records.append(tool_result(f"v{i}", _versioned_ok("2.0.0"), f"2026-07-10T00:{i:02d}:01Z"))
+    write_jsonl(os.path.join(root, "proj", "s1.jsonl"), records)
+
+
+def test_calls_are_counted_by_scope_not_only_errors(tmp_path):
+    """The denominator for 'not observed in 2.0.0 over N attributed calls' must EXIST.
+
+    aggregate() counted calls only by tool, and CodeStat.by_scope counted only errors,
+    so there was no per-scope call denominator anywhere. The flagship sentence in the
+    spec was literally uncomputable.
+    """
+    root = str(tmp_path)
+    _clean_release_corpus(root)
+    cov = mea.audit(root, "srv", 3)["coverage"]
+    assert cov.calls_by_scope == collections.Counter({"1.0.0": 1, "2.0.0": 20})
+    assert cov.total_calls == 21
+    assert cov.attributed_calls == 21
+    assert cov.total_calls == cov.attributed_calls + sum(cov.unknown.values())
+
+    data = json.loads(mea.to_json(mea.audit(root, "srv", 3)))
+    assert data["coverage"]["calls_by_scope"] == {"1.0.0": 1, "2.0.0": 20}
+
+
+def test_zero_error_release_still_gets_a_matrix_column(tmp_path):
+    """A release with 20 clean calls and zero errors must APPEAR in the matrix.
+
+    Columns were derived from ERROR scopes, so the release the user is actually
+    running — clean so far — did not appear at all, and the audit said nothing about
+    the one question it exists to answer.
+    """
+    root = str(tmp_path)
+    _clean_release_corpus(root)
+    text = mea.to_text(mea.audit(root, "srv", 3))
+    lines = text.splitlines()
+    header_idx = lines.index("## Errors by code × version")
+    header_row = lines[header_idx + 1]
+    assert header_row.split() == ["code", "1.0.0", "2.0.0"]
+
+    old_row = next(ln for ln in lines[header_idx + 2 :] if ln.startswith("old_code"))
+    assert old_row.split() == ["old_code", "1", "0"]
+
+    # The per-column denominator: the N in "not observed in 2.0.0 over N calls".
+    calls_row = next(ln for ln in lines[header_idx + 2 :] if ln.startswith("calls"))
+    assert calls_row.split() == ["calls", "1", "20"]
+
+
+def test_text_report_says_not_observed_never_fixed(tmp_path):
+    root = str(tmp_path)
+    _two_version_corpus(root)
+    text = mea.to_text(mea.audit(root, "srv", 3, mea.Filters(server_version="2.0.0")))
+    assert "fixed" not in text.lower()
+    # The NOT-OBSERVED caveat itself must be present, not merely absent of "fixed".
+    assert "NOT OBSERVED" in text
+    assert "not a fix" in text
+
+
+def test_matrix_aligns_columns_for_long_fingerprint_labels(tmp_path):
+    """Finding: at fixed width-14 columns, a fingerprint label like
+    'codex-in-claude/0.1/schema-38' (30 chars) overruns its column and runs
+    into the next header/value, breaking alignment. The matrix must size
+    columns to their content instead.
+    """
+    root = str(tmp_path)
+    fp1 = "codex-in-claude/0.1/schema-38"
+    fp2 = "codex-in-claude/2.0/schema-99"
+
+    def fp_error(code, fp):
+        return json.dumps(
+            {
+                "ok": False,
+                "error": {"code": code, "message": "boom", "retryable": False},
+                "meta": {"fingerprint": fp},
+            }
+        )
+
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", fp_error("old_code", fp1), "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-02T00:00:00Z"),
+            tool_result("t2", fp_error("old_code", fp2), "2026-07-02T00:00:01Z", True),
+        ],
+    )
+    result = mea.audit(root, "srv", 3, mea.Filters(group_by="fingerprint"))
+    text = mea.to_text(result)
+
+    assert "## Errors by code × fingerprint" in text
+    lines = text.splitlines()
+    header_idx = lines.index("## Errors by code × fingerprint")
+    header_row = lines[header_idx + 1]
+    data_row = next(ln for ln in lines[header_idx + 2 :] if ln.startswith("old_code"))
+    calls_row = next(ln for ln in lines[header_idx + 2 :] if ln.startswith("calls"))
+
+    assert header_row.split() == ["code", fp1, fp2]
+    assert data_row.split() == ["old_code", "1", "1"]
+
+    # The assertions above are NOT enough on their own: .split() is invariant to column
+    # width, because there is always at least one space separating the fields. They pass
+    # unchanged with `col_width = 14` reintroduced. Alignment is a property of the
+    # RENDERED WIDTH, so pin that: every row of the matrix must be exactly as wide as
+    # every other, which is true iff each column is sized to its widest label.
+    # Under the bug the 29-char labels overrun their 14-char cells and the header row
+    # renders 94 chars against a 64-char data row.
+    widths = {len(header_row), len(data_row), len(calls_row)}
+    assert widths == {len(header_row)}, (
+        f"matrix rows are ragged — columns are not sized to their labels: "
+        f"header={len(header_row)} data={len(data_row)} calls={len(calls_row)}"
+    )
+    # And the columns land where the labels do: each count's right edge sits under the
+    # right edge of its own header label.
+    for i, fp in enumerate((fp1, fp2)):
+        col_end = header_row.index(fp) + len(fp)
+        assert data_row[:col_end].rstrip().endswith("1")
+        assert len(data_row[:col_end].rstrip()) == col_end, (
+            f"column {i} ({fp}) count is not right-aligned under its header label"
+        )
+
+
+def test_matrix_scopes_sort_versions_naturally_not_lexicographically(tmp_path):
+    """A plain string sort puts "0.10.0" and "0.11.0" BEFORE "0.9.0" — backwards for
+    the one thing this feature exists to show: a trajectory toward the newest release.
+    UNKNOWN must still sort last regardless.
+    """
+    root = str(tmp_path)
+    versions = ["0.9.0", "0.10.0", "0.11.0", "1.0.0"]
+    records = []
+    for i, v in enumerate(versions):
+        records.append(tool_use(f"t{i}", "mcp__srv__go", {}, f"2026-07-0{i + 1}T00:00:00Z"))
+        records.append(
+            tool_result(f"t{i}", _versioned_error("code", v), f"2026-07-0{i + 1}T00:00:01Z", True)
+        )
+    # one unattributed call, to confirm "unknown" still sorts last
+    records.append(tool_use("tu", "mcp__srv__go", {}, "2026-07-05T00:00:00Z"))
+    records.append(tool_result("tu", envelope("code"), "2026-07-05T00:00:01Z", True))
+    write_jsonl(os.path.join(root, "proj", "s1.jsonl"), records)
+
+    result = mea.audit(root, "srv", 3)
+    assert mea.matrix_scopes(result) == ["0.9.0", "0.10.0", "0.11.0", "1.0.0", "unknown"]
+
+    header_row = next(
+        ln for ln in mea.to_text(result).splitlines() if ln.startswith("code ")
+    )
+    assert header_row.split() == ["code", "0.9.0", "0.10.0", "0.11.0", "1.0.0", "unknown"]
+
+
+def test_matrix_scopes_sort_fingerprints_naturally(tmp_path):
+    """Same defect, fingerprint side: "schema-10" must not sort before "schema-2"."""
+    root = str(tmp_path)
+    fps = ["schema-3", "schema-10", "schema-2"]
+    records = []
+    for i, fp in enumerate(fps):
+        body = json.dumps(
+            {
+                "ok": False,
+                "error": {"code": "code", "message": "b", "retryable": False},
+                "meta": {"fingerprint": fp},
+            }
+        )
+        records.append(tool_use(f"t{i}", "mcp__srv__go", {}, f"2026-07-0{i + 1}T00:00:00Z"))
+        records.append(tool_result(f"t{i}", body, f"2026-07-0{i + 1}T00:00:01Z", True))
+    write_jsonl(os.path.join(root, "proj", "s1.jsonl"), records)
+
+    result = mea.audit(root, "srv", 3, mea.Filters(group_by="fingerprint"))
+    assert mea.matrix_scopes(result) == ["schema-2", "schema-3", "schema-10"]
+
+
+def test_natural_sort_key_helper():
+    """Pin the helper directly: numeric runs compare by value, not lexicographically,
+    and mixed text/number chunks never raise (str and int are never compared directly).
+    """
+    versions = ["1.0.0", "0.10.0", "0.9.0", "0.2.0"]
+    assert sorted(versions, key=mea.natural_sort_key) == [
+        "0.2.0", "0.9.0", "0.10.0", "1.0.0",
+    ]
+    fps = ["schema-10", "schema-2", "schema-3"]
+    assert sorted(fps, key=mea.natural_sort_key) == ["schema-2", "schema-3", "schema-10"]
+    # No crash comparing a purely numeric scope against a purely textual one — chunks
+    # are tagged (text, number) so cross-type chunks are never compared directly.
+    # (matrix_scopes(), not this helper, is what pins UNKNOWN to sort last.)
+    assert sorted(["v2.0", "1.0.0"], key=mea.natural_sort_key) == ["v2.0", "1.0.0"]
+
+
+# --- CLI / slash-command argument passing -----------------------------------
+
+
+def test_args_string_round_trips_flags():
+    """The slash command hands the script ONE raw string. It must reach the parser as
+    flags — this is the test that catches the '--server' interpolation blocker."""
+    args = mea.parse_argv(["--args", "codex --server-version 0.10.0 --group-by version"])
+    assert args.server == "codex"
+    assert args.server_version == "0.10.0"
+    assert args.group_by == "version"
+
+
+def test_args_string_bare_server_and_empty():
+    assert mea.parse_argv(["--args", "codex"]).server == "codex"
+    assert mea.parse_argv(["--args", ""]).server == ""  # discovery mode
+
+
+def test_args_string_rejects_quotes():
+    """A stray quote in --args would otherwise produce a confusing shlex parse.
+
+    This is NOT a security control. It does not prevent shell injection and cannot:
+    bash tokenizes the interpolated $ARGUMENTS in commands/mcp-error-audit.md before
+    python starts, so a payload like `x' ; echo pwned #` reaches python as argv
+    ['--args', 'x'] — no quote ever arrives at this check. `allowed-tools` does not
+    guard it either: it is a PREFIX match, which the injected string still satisfies.
+    The risk predates this branch and is knowingly accepted; see parse_argv().
+    """
+    with pytest.raises(SystemExit):
+        mea.parse_argv(["--args", "codex --since '2026-07-12'"])
+
+
+def test_args_string_trailing_backslash_is_a_clean_error():
+    """A trailing backslash with no quotes passes the quote check but makes
+    shlex.split raise ValueError('No escaped character'). That must surface as a
+    clean parser.error (SystemExit, exit code 2), not an uncaught traceback."""
+    with pytest.raises(SystemExit) as exc_info:
+        mea.parse_argv(["--args", "codex --since 2026-07-12\\"])
+    assert exc_info.value.code == 2
+
+
+def test_unknown_only_with_server_version_is_rejected():
+    """--unknown only paired with a filter on the ACTIVE dimension is vacuous by
+    construction: an unattributed record can never equal a specific observed value, so
+    the result is always empty regardless of corpus. Reject it at validation time instead
+    of silently reporting zero results."""
+    with pytest.raises(SystemExit):
+        mea.parse_argv(["--args", "codex --unknown only --server-version 0.10.0"])
+
+
+def test_unknown_only_with_fingerprint_is_rejected():
+    """Same vacuity, but only when fingerprint IS the active dimension."""
+    with pytest.raises(SystemExit):
+        mea.parse_argv(
+            ["--args", "codex --group-by fingerprint --unknown only "
+                       "--fingerprint srv/0.1/schema-38"]
+        )
+
+
+def test_unknown_only_allows_a_filter_on_the_OTHER_dimension(tmp_path):
+    """The vacuity is dimension-relative, and the rejection must be too.
+
+    `--group-by version --unknown only --fingerprint fp-1` asks "which calls from
+    fingerprint fp-1 stamp no version?" — the exact shape of the corpus that exists today,
+    where servers stamp a fingerprint and no version. It is answerable and NON-EMPTY. The
+    first version of the check rejected any identity filter and so refused the question.
+
+    Both directions are covered: the inverse (group by fingerprint, filter by version) is
+    equally legitimate.
+    """
+    args = mea.parse_argv(
+        ["--args", "codex --group-by version --unknown only --fingerprint fp-1"]
+    )
+    assert args.unknown == "only" and args.fingerprint == "fp-1"
+    mea.parse_argv(
+        ["--args", "codex --group-by fingerprint --unknown only --server-version 1.0.0"]
+    )
+
+    # NEGATIVE CONTROL: the combo the parser now admits must actually return rows —
+    # a check that only proves argparse is quiet would be worthless.
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result(
+                "t1",
+                json.dumps({"error": {"code": "fp_code"}, "meta": {"fingerprint": "fp-1"}}),
+                "2026-07-01T00:00:01Z",
+                True,
+            ),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-02T00:00:00Z"),
+            tool_result(
+                "t2",
+                json.dumps({"error": {"code": "other"}, "meta": {"fingerprint": "fp-2"}}),
+                "2026-07-02T00:00:01Z",
+                True,
+            ),
+        ],
+    )
+    res = mea.audit(
+        root, "srv", 3,
+        mea.Filters(group_by="version", unknown="only", fingerprint="fp-1"),
+    )
+    assert res["coverage"].total_calls == 1  # fp-2's call is filtered out
+    assert set(res["codes"]) == {"fp_code"}
+    assert res["coverage"].attributed_calls == 0  # none of them stamp a version
+
+
+def test_impossible_and_inverted_dates_are_rejected():
+    """A shape check is not a date check. `2026-02-31` matches YYYY-MM-DD and does not
+    exist; an inverted window can never select anything. Both used to sail through and
+    return zero rows, which reads exactly like an honest "your corpus has none"."""
+    with pytest.raises(SystemExit):
+        mea.parse_argv(["--args", "codex --since 2026-02-31"])
+    with pytest.raises(SystemExit):
+        mea.parse_argv(["--args", "codex --until 2026-13-01"])
+    with pytest.raises(SystemExit):
+        mea.parse_argv(["--args", "codex --since 2026-12-01 --until 2026-01-01"])
+
+    # POSITIVE CONTROL: real dates, and an equal-bounds window (a single day), still pass.
+    args = mea.parse_argv(["--args", "codex --since 2026-02-28 --until 2026-02-28"])
+    assert args.since == "2026-02-28" and args.until == "2026-02-28"
+    mea.parse_argv(["--args", "codex --since 2024-02-29"])  # a real leap day
+
+
+def test_fingerprint_validation_allows_slashes_server_does_not():
+    args = mea.parse_argv(["--args", "codex --fingerprint codex-in-claude/0.1/schema-38"])
+    assert args.fingerprint == "codex-in-claude/0.1/schema-38"
+    with pytest.raises(SystemExit):
+        mea.parse_argv(["--args", "codex/evil"])  # server token stays strict
+
+
+def test_date_validation_rejects_non_iso():
+    with pytest.raises(SystemExit):
+        mea.parse_argv(["--args", "codex --since july"])
+
+
+def test_discovery_output_is_unchanged_by_version_work(tmp_path):
+    """Golden guard: discovery keeps its all-call denominator and stays unversioned."""
+    root = str(tmp_path)
+    _two_version_corpus(root)
+    data = json.loads(mea.to_json(mea.audit(root, "", 3)))
+    assert data["mode"] == "discovery"
+    assert data["servers"]["srv"]["calls"] == 2
+    assert data["servers"]["srv"]["errors"] == 2
+    assert data["servers"]["srv"]["error_rate"] == 1.0
+    assert "coverage" not in data
+
+
+# --- "no calls matched" message must distinguish its two causes -------------
+
+
+def test_no_such_server_message_unchanged(tmp_path):
+    """Genuinely no such server: the original, unqualified message."""
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", _versioned_error("boom", "1.0.0"), "2026-07-01T00:00:01Z", True),
+        ],
+    )
+    result = mea.audit(root, "nosuchserver", 3)
+    text = mea.to_text(result)
+    assert (
+        "No MCP tool calls matched. Run without --server to list "
+        "the servers seen in transcripts." in text
+    )
+
+
+def test_filter_excludes_everything_message_names_the_filter(tmp_path):
+    """The server matched calls; a scope filter excluded all of them. The message
+    must say so and name the filter — NOT imply the server name was wrong.
+
+    Regression for: `--server-version 0.10.0` on a corpus with no versions at all
+    printed the exact same "no such server" message as a genuinely bad server name,
+    sending the user to fix the wrong thing.
+    """
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", _versioned_error("boom", "1.0.0"), "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+            tool_result("t2", _versioned_error("boom", "1.0.0"), "2026-07-01T00:01:01Z", True),
+        ],
+    )
+    result = mea.audit(root, "srv", 3, mea.Filters(server_version="9.9.9"))
+    text = mea.to_text(result)
+    assert "No MCP tool calls matched" not in text
+    assert "matched 2 calls for this server, but 0 after scoping to" in text
+    assert "server-version 9.9.9" in text
+
+
+def test_error_dates_come_from_the_result_not_the_call(tmp_path):
+    """first_seen/last_seen/samples are OCCURRENCE facts: they date when the error came
+    back, not when the call was issued.
+
+    The version-scoping refactor moved every call onto a single CallRecord.ts captured
+    from the `tool_use` record, and these fields silently followed it. For a call that
+    starts at 23:59 and fails at 00:01 the next day, that reports the error on the wrong
+    DAY — and `--since`/`--until` legitimately need the call's start time (filtering the
+    two records apart would split the pair), so one timestamp cannot serve both.
+
+    The corpus below is built so the two timestamps disagree on the calendar date, which
+    is the only way this test can fail loudly rather than by a few seconds.
+    """
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T23:59:00Z"),
+            tool_result("t1", _versioned_error("boom", "1.0.0"), "2026-07-02T00:01:00Z", True),
+        ],
+    )
+    stat = mea.audit(root, "srv", 3)["codes"]["boom"]
+    assert stat.first_seen == "2026-07-02T00:01:00Z"  # result, not the 07-01 call
+    assert stat.last_seen == "2026-07-02T00:01:00Z"
+    assert [s["ts"] for s in stat.samples] == ["2026-07-02T00:01:00Z"]
+
+    # The date FILTER still reads the call's start time — the pair must not be split.
+    span = mea.audit(root, "srv", 3, mea.Filters(since="2026-07-01", until="2026-07-01"))
+    assert span["coverage"].total_calls == 1
+    assert span["coverage"].excluded_missing_timestamp == 0
+
+
+def test_matrix_stays_aligned_when_a_cell_is_wider_than_its_label(tmp_path):
+    """Column width was sized from the scope LABEL alone. A cell wider than that width
+    expands past the format spec, so that row runs longer than the header and the table
+    stops lining up. Width must follow the widest thing actually printed.
+
+    Reproduced with call counts that need more columns than the label "1.0.0" (5 chars)
+    or MIN_SCOPE_COL (6) provide.
+    """
+    cov = mea.Coverage(total_calls=2_000_000, attributed_calls=2_000_000)
+    cov.calls_by_scope.update({"1.0.0": 1_500_000, "2.0.0": 500_000})
+    stat = mea.CodeStat(count=1_234_567)
+    stat.by_scope.update({"1.0.0": 1_234_567})
+    stat.tools.update({"go": 1_234_567})
+    result = {
+        "server": "srv",
+        "matched_servers": ["srv"],
+        "files_scanned": 1,
+        "sessions_scanned": 1,
+        "servers": {"srv": mea.ServerStat(calls=2_000_000, errors=1_234_567)},
+        "audit_sessions": {"s1"},
+        "total_calls": collections.Counter({"go": 2_000_000}),
+        "total_errors": collections.Counter({"go": 1_234_567}),
+        "codes": {"boom": stat},
+        "coverage": cov,
+        "filters": mea.Filters(),
+        "raw_matched_calls": 2_000_000,
+    }
+    lines = mea.to_text(result).splitlines()
+    start = lines.index(next(ln for ln in lines if ln.startswith("code ")))
+    matrix = lines[start:start + 5]  # header, boom row, rule, calls row, err% row
+    assert len({len(ln) for ln in matrix}) == 1, (
+        "matrix rows differ in width:\n" + "\n".join(f"{len(ln):>3} |{ln}|" for ln in matrix)
+    )
+
+    # NEGATIVE CONTROL: the assertion above can fail. Sizing off the label alone (the old
+    # behavior) leaves the count cell wider than its column, which is what it must catch.
+    old_width = max(mea.MIN_SCOPE_COL, len("1.0.0"))
+    assert len(str(1_234_567)) > old_width
+
+
+def test_json_carries_the_filters_that_defined_its_population(tmp_path):
+    """Every count in the JSON is scoped by the active filters, so the filters have to
+    ship with it. `date_scoped: true` alone loses the window; a version/fingerprint/
+    unknown scope was unreconstructable from the serialized report entirely. A scoped
+    statistic whose scope is not stated is the same failure as an unnamed denominator.
+    """
+    root = str(tmp_path)
+    _two_version_corpus(root)
+    filters = mea.Filters(
+        server_version="1.0.0", since="2026-07-01", until="2026-07-05", unknown="exclude"
+    )
+    data = json.loads(mea.to_json(mea.audit(root, "srv", 3, filters)))
+    assert data["coverage"]["active_filters"] == {
+        "server_version": "1.0.0",
+        "fingerprint": None,
+        "since": "2026-07-01",
+        "until": "2026-07-05",
+        "unknown": "exclude",
+    }
+
+    # An unscoped run says so explicitly rather than omitting the key.
+    plain = json.loads(mea.to_json(mea.audit(root, "srv", 3)))
+    assert plain["coverage"]["active_filters"] == {
+        "server_version": None,
+        "fingerprint": None,
+        "since": None,
+        "until": None,
+        "unknown": "include",
+    }
