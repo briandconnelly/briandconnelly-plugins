@@ -511,9 +511,16 @@ class Filters:
         return ", ".join(parts)
 
     def selects(self, rec: CallRecord, coverage: Coverage) -> bool:
-        if self.unknown == "exclude" and rec.unknown_reason:
+        # ONE definition of unknown, and it is the same one Coverage uses: does this call
+        # carry a value for the dimension we are grouping by? Testing rec.unknown_reason
+        # instead ("was there any envelope at all?") is dimension-INdependent, and the two
+        # diverge on the whole fingerprint-only corpus that exists today: `exclude` became
+        # a silent no-op, and `only` returned nothing while coverage reported those very
+        # calls as unattributed.
+        unattributed = rec.scope(self.group_by) == UNKNOWN
+        if self.unknown == "exclude" and unattributed:
             return False
-        if self.unknown == "only" and not rec.unknown_reason:
+        if self.unknown == "only" and not unattributed:
             return False
         if self.server_version and rec.version != self.server_version:
             return False

@@ -627,6 +627,72 @@ def test_date_filter_excludes_undated_calls_as_missing_timestamp(tmp_path):
     assert set(result["codes"]) == {"dated_error"}
 
 
+def _fingerprint_only_corpus(root):
+    """The real corpus today: every call carries a fingerprint, none carries a version."""
+    fp_err = json.dumps(
+        {"ok": False, "error": {"code": "fp_code", "message": "b", "retryable": False},
+         "meta": {"fingerprint": "srv/0.1/schema-38"}}
+    )
+    fp_ok = json.dumps({"ok": True, "meta": {"fingerprint": "srv/0.1/schema-38"}})
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", fp_err, "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+            tool_result("t2", fp_ok, "2026-07-01T00:01:01Z"),
+        ],
+    )
+
+
+def test_unknown_filter_is_dimension_aware(tmp_path):
+    """`--unknown` must judge unknown-ness on the ACTIVE dimension, exactly as Coverage does.
+
+    Filters.selects() tested rec.unknown_reason ("was there any envelope?") while Coverage
+    tested scope != UNKNOWN ("does this call carry a value for the dimension I am grouping
+    by?"). On a fingerprint-only corpus — which is the real corpus today, since no server
+    stamps a version yet — the two definitions diverge completely:
+
+      --group-by version --unknown exclude  was a silent NO-OP (nothing has an unknown_reason)
+      --group-by version --unknown only     returned ZERO calls, while coverage in the same
+                                            run reported those very calls as unattributed.
+
+    The spec says `only` exists to make the unknown bucket inspectable rather than a silent
+    drain. One definition, dimension-aware, everywhere.
+    """
+    root = str(tmp_path)
+    _fingerprint_only_corpus(root)
+
+    # Grouping by VERSION: nothing carries a version, so every call is unknown.
+    v_only = mea.audit(root, "srv", 3, mea.Filters(group_by="version", unknown="only"))
+    assert v_only["coverage"].total_calls == 2
+    assert set(v_only["codes"]) == {"fp_code"}  # the unknown bucket is inspectable
+    assert v_only["coverage"].attributed_calls == 0
+
+    v_excl = mea.audit(root, "srv", 3, mea.Filters(group_by="version", unknown="exclude"))
+    assert v_excl["coverage"].total_calls == 0  # was 2: a silent no-op
+    assert set(v_excl["codes"]) == set()
+
+    # Grouping by FINGERPRINT: every call carries one, so the buckets invert.
+    f_only = mea.audit(root, "srv", 3, mea.Filters(group_by="fingerprint", unknown="only"))
+    assert f_only["coverage"].total_calls == 0
+    f_excl = mea.audit(root, "srv", 3, mea.Filters(group_by="fingerprint", unknown="exclude"))
+    assert f_excl["coverage"].total_calls == 2
+    assert f_excl["coverage"].attributed_calls == 2
+
+    # The invariant holds on every one of these paths.
+    for res in (v_only, v_excl, f_only, f_excl):
+        cov = res["coverage"]
+        assert cov.total_calls == cov.attributed_calls + sum(cov.unknown.values())
+
+    # POSITIVE CONTROL: `exclude` under group_by=version is not vacuously empty because
+    # the filter is broken — the same flag surfaces calls when a version IS present.
+    _two_version_corpus(str(tmp_path / "versioned"))
+    ok = mea.audit(str(tmp_path / "versioned"), "srv", 3,
+                   mea.Filters(group_by="version", unknown="exclude"))
+    assert ok["coverage"].total_calls == 2
+
+
 def test_unknown_only_and_exclude(tmp_path):
     root = str(tmp_path)
     write_jsonl(
