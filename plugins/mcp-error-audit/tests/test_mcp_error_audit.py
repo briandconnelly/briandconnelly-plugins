@@ -667,7 +667,18 @@ def test_date_filter_uses_the_call_timestamp_not_the_result(tmp_path):
     assert set(result["codes"]) == {"inside"}
 
 
-def test_date_filter_excludes_undated_calls_as_missing_timestamp(tmp_path):
+def test_date_filter_excludes_undated_calls_without_filing_it_as_unattributed(tmp_path):
+    """An undated call under a date filter is SCOPE-EXCLUDED, not attribution-failed.
+
+    It may carry a perfectly good version (as this one does: `undated_error` is
+    `_versioned_error(..., "1.0.0")`) — it is simply outside what a date filter can
+    place in a window. Filing it under coverage.unknown["missing_timestamp"] claimed
+    attribution failed when it plainly didn't, and made a fully-attributed corpus
+    print a false PARTIAL note. It must be excluded from every coverage count, exactly
+    like every other filter exclusion (version/fingerprint mismatch, --unknown
+    exclude/only) — none of which touch coverage either — and reported separately so
+    it doesn't vanish silently.
+    """
     root = str(tmp_path)
     # Build a corpus with both dated and undated calls inside the window
     records = [
@@ -678,7 +689,7 @@ def test_date_filter_excludes_undated_calls_as_missing_timestamp(tmp_path):
         tool_use("t2", "mcp__srv__go", {}, "2026-07-05T10:00:00Z"),
         tool_result("t2", _versioned_ok("1.0.0"), "2026-07-05T10:00:01Z"),
     ]
-    # undated call cannot be placed in a window
+    # undated call cannot be placed in a window — but it DOES carry a version
     rec_use = tool_use("t3", "mcp__srv__go", {}, "2026-07-05T12:00:00Z")
     del rec_use["timestamp"]
     records.extend([rec_use, tool_result("t3", _versioned_error("undated_error", "1.0.0"), "2026-07-05T12:00:01Z", True)])
@@ -691,15 +702,22 @@ def test_date_filter_excludes_undated_calls_as_missing_timestamp(tmp_path):
     assert cov.total_calls == cov.attributed_calls + sum(cov.unknown.values()), \
         f"Invariant broken: {cov.total_calls} != {cov.attributed_calls} + {sum(cov.unknown.values())}"
 
-    # Verify the undated call is excluded but still counted in total_calls
-    assert cov.unknown["missing_timestamp"] == 1
-    assert cov.total_calls == 3  # 2 dated + 1 undated
+    # The undated call is excluded from coverage entirely — not counted as unattributed.
+    assert cov.unknown["missing_timestamp"] == 0
+    assert cov.total_calls == 2  # only the two dated calls
+    assert cov.attributed_calls == 2  # both dated calls have versions; nothing is unattributed
+    assert cov.partial() is False  # a fully-attributed corpus must not read as PARTIAL
 
-    # Verify the dated calls are still counted and attributed
-    assert cov.attributed_calls == 2  # only dated calls have versions
+    # It is tracked separately, so it doesn't vanish silently.
+    assert cov.excluded_missing_timestamp == 1
 
     # Verify the error from the dated call is in the codes (undated error is excluded)
     assert set(result["codes"]) == {"dated_error"}
+
+    # The text report must say so, outside of any PARTIAL note (there is none here).
+    text = mea.to_text(result)
+    assert "PARTIAL" not in text
+    assert "1 calls with no timestamp" in text
 
 
 def _fingerprint_only_corpus(root):
@@ -900,6 +918,63 @@ def test_header_rate_is_labeled_as_spanning_all_calls(tmp_path):
     assert "computed over attributed calls only" not in text
 
 
+def test_header_rate_label_matches_denominator_under_server_version_scope(tmp_path):
+    """Regression for F1: `--server-version` narrows `calls` to just that version's
+    calls — every one of them attributed by construction — but the header kept the
+    unscoped label "all matched calls, attributed or not" regardless. The label must
+    name the set `calls` actually is.
+    """
+    root = str(tmp_path)
+    _two_version_corpus(root)  # 1.0.0: 1 call/1 error. 2.0.0: 1 call/1 error.
+    text = mea.to_text(mea.audit(root, "srv", 3, mea.Filters(server_version="1.0.0")))
+    header = next(ln for ln in text.splitlines() if ln.startswith("scanned "))
+    assert "1 calls · 1 errors (100.0% of calls scoped to server-version 1.0.0)" in header
+    # It must NOT claim to span every matched call — only 1.0.0's.
+    assert "all matched calls" not in header
+
+
+def test_header_rate_label_matches_denominator_under_unknown_exclude(tmp_path):
+    """`--unknown exclude` narrows `calls` to attributed-only — the exact inverse of
+    the old unscoped label ("attributed or not"). The label must say so.
+    """
+    root = str(tmp_path)
+    _mixed_attribution_corpus(root)  # 1.0.0: 2 calls/1 error. unattributed: 3 calls/1 error.
+    text = mea.to_text(mea.audit(root, "srv", 3, mea.Filters(unknown="exclude")))
+    header = next(ln for ln in text.splitlines() if ln.startswith("scanned "))
+    assert "2 calls · 1 errors (50.0% of calls scoped to unknown=exclude)" in header
+    assert "all matched calls" not in header
+
+
+def test_header_rate_label_matches_denominator_under_unknown_only(tmp_path):
+    """`--unknown only` narrows `calls` to entirely UNATTRIBUTED calls — the opposite
+    of "attributed or not" too, just from the other side.
+    """
+    root = str(tmp_path)
+    _mixed_attribution_corpus(root)
+    text = mea.to_text(mea.audit(root, "srv", 3, mea.Filters(unknown="only")))
+    header = next(ln for ln in text.splitlines() if ln.startswith("scanned "))
+    assert "3 calls · 1 errors (33.3% of calls scoped to unknown=only)" in header
+    assert "all matched calls" not in header
+
+
+def test_header_rate_label_matches_denominator_under_date_scope(tmp_path):
+    """`--since`/`--until` narrow `calls` to just the date window's calls."""
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-05T00:00:00Z"),
+            tool_result("t1", _versioned_error("dated_error", "1.0.0"), "2026-07-05T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-05T10:00:00Z"),
+            tool_result("t2", _versioned_ok("1.0.0"), "2026-07-05T10:00:01Z"),
+        ],
+    )
+    text = mea.to_text(mea.audit(root, "srv", 3, mea.Filters(since="2026-07-05")))
+    header = next(ln for ln in text.splitlines() if ln.startswith("scanned "))
+    assert "2 calls · 1 errors (50.0% of calls scoped to since 2026-07-05)" in header
+    assert "all matched calls" not in header
+
+
 def test_per_scope_rates_use_that_scopes_own_denominator(tmp_path):
     """Every per-scope rate divides by THAT scope's calls — never the global count."""
     root = str(tmp_path)
@@ -1091,6 +1166,69 @@ def test_matrix_aligns_columns_for_long_fingerprint_labels(tmp_path):
             f"column {i} ({fp}) count is not right-aligned under its header label"
         )
 
+
+def test_matrix_scopes_sort_versions_naturally_not_lexicographically(tmp_path):
+    """A plain string sort puts "0.10.0" and "0.11.0" BEFORE "0.9.0" — backwards for
+    the one thing this feature exists to show: a trajectory toward the newest release.
+    UNKNOWN must still sort last regardless.
+    """
+    root = str(tmp_path)
+    versions = ["0.9.0", "0.10.0", "0.11.0", "1.0.0"]
+    records = []
+    for i, v in enumerate(versions):
+        records.append(tool_use(f"t{i}", "mcp__srv__go", {}, f"2026-07-0{i + 1}T00:00:00Z"))
+        records.append(
+            tool_result(f"t{i}", _versioned_error("code", v), f"2026-07-0{i + 1}T00:00:01Z", True)
+        )
+    # one unattributed call, to confirm "unknown" still sorts last
+    records.append(tool_use("tu", "mcp__srv__go", {}, "2026-07-05T00:00:00Z"))
+    records.append(tool_result("tu", envelope("code"), "2026-07-05T00:00:01Z", True))
+    write_jsonl(os.path.join(root, "proj", "s1.jsonl"), records)
+
+    result = mea.audit(root, "srv", 3)
+    assert mea.matrix_scopes(result) == ["0.9.0", "0.10.0", "0.11.0", "1.0.0", "unknown"]
+
+    header_row = next(
+        ln for ln in mea.to_text(result).splitlines() if ln.startswith("code ")
+    )
+    assert header_row.split() == ["code", "0.9.0", "0.10.0", "0.11.0", "1.0.0", "unknown"]
+
+
+def test_matrix_scopes_sort_fingerprints_naturally(tmp_path):
+    """Same defect, fingerprint side: "schema-10" must not sort before "schema-2"."""
+    root = str(tmp_path)
+    fps = ["schema-3", "schema-10", "schema-2"]
+    records = []
+    for i, fp in enumerate(fps):
+        body = json.dumps(
+            {
+                "ok": False,
+                "error": {"code": "code", "message": "b", "retryable": False},
+                "meta": {"fingerprint": fp},
+            }
+        )
+        records.append(tool_use(f"t{i}", "mcp__srv__go", {}, f"2026-07-0{i + 1}T00:00:00Z"))
+        records.append(tool_result(f"t{i}", body, f"2026-07-0{i + 1}T00:00:01Z", True))
+    write_jsonl(os.path.join(root, "proj", "s1.jsonl"), records)
+
+    result = mea.audit(root, "srv", 3, mea.Filters(group_by="fingerprint"))
+    assert mea.matrix_scopes(result) == ["schema-2", "schema-3", "schema-10"]
+
+
+def test_natural_sort_key_helper():
+    """Pin the helper directly: numeric runs compare by value, not lexicographically,
+    and mixed text/number chunks never raise (str and int are never compared directly).
+    """
+    versions = ["1.0.0", "0.10.0", "0.9.0", "0.2.0"]
+    assert sorted(versions, key=mea.natural_sort_key) == [
+        "0.2.0", "0.9.0", "0.10.0", "1.0.0",
+    ]
+    fps = ["schema-10", "schema-2", "schema-3"]
+    assert sorted(fps, key=mea.natural_sort_key) == ["schema-2", "schema-3", "schema-10"]
+    # No crash comparing a purely numeric scope against a purely textual one — chunks
+    # are tagged (text, number) so cross-type chunks are never compared directly.
+    # (matrix_scopes(), not this helper, is what pins UNKNOWN to sort last.)
+    assert sorted(["10", "2"], key=mea.natural_sort_key) == ["2", "10"]
 
 
 # --- CLI / slash-command argument passing -----------------------------------

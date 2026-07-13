@@ -470,6 +470,14 @@ class Coverage:
     # some selected calls could not be attributed, so the buckets sum to every call
     # aggregate() saw.
     calls_by_scope: collections.Counter = field(default_factory=collections.Counter)
+    # Calls a date filter (--since/--until) dropped because they carried no timestamp to
+    # place in the window. This is a SCOPE EXCLUSION, not an attribution failure — an
+    # undated call may carry a perfectly good version, so it must NOT land in `unknown`
+    # or count toward `total_calls`/`attributed_calls`: the same as every other filter
+    # exclusion (version/fingerprint mismatch, --unknown exclude/only), none of which
+    # touch coverage either. Tracked separately purely so the report can say how many
+    # calls a date scope dropped, instead of letting them vanish silently.
+    excluded_missing_timestamp: int = 0
 
     def partial(self) -> bool:
         """True when some calls could not be attributed — every rate is then partial."""
@@ -530,8 +538,11 @@ class Filters:
             # The CALL's start time, never the result's: filtering the two records
             # independently would split a pair and manufacture phantom no_result calls.
             if not rec.ts:
-                coverage.total_calls += 1
-                coverage.unknown["missing_timestamp"] += 1
+                # Excluded by the date window, not a failure to attribute: an undated
+                # call may carry a perfectly good version. Do not touch total_calls or
+                # unknown — every other filter exclusion (version/fingerprint mismatch,
+                # --unknown exclude/only) leaves coverage alone too, and this must match.
+                coverage.excluded_missing_timestamp += 1
                 return False
             day = rec.ts[:10]
             if self.since and day < self.since:
@@ -685,18 +696,37 @@ def errors_by_scope(result) -> collections.Counter:
     return total
 
 
+_NUMERIC_RUN = re.compile(r"(\d+)")
+
+
+def natural_sort_key(s: str) -> list[tuple[int, object]]:
+    """Split `s` into text/number chunks so numeric runs compare BY VALUE.
+
+    A plain string sort puts "0.10.0" before "0.9.0" and "schema-10" before
+    "schema-2" — wrong for both version numbers and fingerprint schema ids, whose
+    whole point is to read as a trajectory toward the newest release. Each chunk is
+    tagged (0, str) or (1, int) so chunks of different types never get compared
+    directly against each other (which would raise); only same-position, same-type
+    chunks are ever compared, and the tag alone breaks ties across types.
+    """
+    chunks = [c for c in _NUMERIC_RUN.split(s) if c != ""]
+    return [(1, int(c)) if c.isdigit() else (0, c) for c in chunks]
+
+
 def matrix_scopes(result) -> list[str]:
     """The matrix's columns, derived from CALL scopes — not error scopes.
 
     A release whose calls all succeeded has no error rows, but it still gets a column
     (all zeros, over a real call denominator). The error scopes are unioned in purely
     defensively; they are a subset of the call scopes by construction. UNKNOWN sorts
-    last so observed releases read left-to-right.
+    last; the rest sort in natural (numeric-aware) order so observed releases read
+    left-to-right toward the newest one — "0.9.0" before "0.10.0", "schema-3" before
+    "schema-10" — instead of a lexicographic sort that would put them backwards.
     """
     scopes = set(result["coverage"].calls_by_scope) | {
         sc for stat in result["codes"].values() for sc in stat.by_scope
     }
-    return sorted(scopes, key=lambda sc: (sc == UNKNOWN, sc))
+    return sorted(scopes, key=lambda sc: (sc == UNKNOWN, natural_sort_key(sc)))
 
 
 def scope_rate(result, scope: str) -> str:
@@ -784,6 +814,7 @@ def to_json(result) -> str:
                 "total_calls": result["coverage"].total_calls,
                 "attributed_calls": result["coverage"].attributed_calls,
                 "unknown": dict(result["coverage"].unknown),
+                "excluded_missing_timestamp": result["coverage"].excluded_missing_timestamp,
                 "partial": result["coverage"].partial(),
                 "group_by": result["filters"].group_by,
                 "date_scoped": result["filters"].date_scoped(),
@@ -824,10 +855,18 @@ def to_text(result) -> str:
 
     calls = sum(result["total_calls"].values())
     errors = sum(result["total_errors"].values())
-    # This rate spans EVERY matched call, attributed or not. That is a legitimate
-    # figure — but it belongs to no single release, so it is labeled as what it is.
-    # The per-release rates live in the matrix, each over its own denominator.
-    rate = f"{100 * errors / calls:.1f}% of all matched calls, attributed or not" if calls else "n/a"
+    # `calls` is every SELECTED call — every matched call when unscoped, but only
+    # whatever the active --server-version/--fingerprint/--since/--until/--unknown
+    # filters left in when scoped. The label must name whichever set that actually
+    # is: it must never claim "all matched calls" on a scoped run, where the true
+    # all-matched count lives in raw_matched_calls instead. The per-release rates
+    # live in the matrix, each over its own denominator.
+    active_filters = result["filters"].describe_active()
+    denom_desc = (
+        f"calls scoped to {active_filters}" if active_filters
+        else "all matched calls, attributed or not"
+    )
+    rate = f"{100 * errors / calls:.1f}% of {denom_desc}" if calls else "n/a"
     n_sess = len(result["audit_sessions"])
     out.append(f"# MCP error audit — servers matching '{result['server']}'")
     if not calls:
@@ -879,14 +918,25 @@ def to_text(result) -> str:
             f"Each {dim} column in the matrix below has its own denominator (its `calls` "
             f"row), so no release's rate borrows another's calls; the unattributable ones "
             "are isolated in the `unknown` column instead of inflating any release. The "
-            "overall rate in the header spans all matched calls, attributed or not."
+            f"overall rate in the header spans {denom_desc}."
         )
     if result["filters"].date_scoped():
-        out.append(
+        note = (
             "NOTE: date-scoped, APPROXIMATE — a date is a proxy for a release. It is wrong "
             "if you upgraded late or ran a dev tree between releases. Prefer "
             "--server-version or --fingerprint, which are observed in the envelope."
         )
+        if cov.excluded_missing_timestamp:
+            # These calls are NOT in total_calls/attributed_calls/unknown above — they
+            # were excluded from the report entirely, the same as any other scope
+            # exclusion, because an undated call may well have a perfectly good version.
+            # Named here so they do not vanish silently.
+            note += (
+                f" {cov.excluded_missing_timestamp} calls with no timestamp could not be "
+                "placed in the date window and were excluded from every count above "
+                "(not counted as unattributed — they may well carry a version)."
+            )
+        out.append(note)
 
     scopes = matrix_scopes(result)
     if scopes:
