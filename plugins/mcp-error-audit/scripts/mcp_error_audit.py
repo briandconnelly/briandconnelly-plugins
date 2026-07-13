@@ -15,7 +15,11 @@ With no --server, runs discovery mode: lists every MCP server seen in the
 transcripts with call/error/session counts.
 
 Usage:
-    mcp_error_audit.py [--server SUBSTRING] [--json] [--root DIR] [--samples N]
+    mcp_error_audit.py [SERVER] [--server-version V] [--fingerprint FP]
+                       [--since YYYY-MM-DD] [--until YYYY-MM-DD]
+                       [--group-by version|fingerprint] [--unknown include|exclude|only]
+                       [--json] [--root DIR] [--samples N]
+    mcp_error_audit.py --args "SERVER [FLAGS...]"   # re-parsed with shlex; no quotes allowed
 
 Standard library only.
 """
@@ -27,10 +31,17 @@ import collections
 import json
 import os
 import re
+import shlex
 from dataclasses import dataclass, field
 from glob import glob
 
 VALID_SERVER = re.compile(r"^[A-Za-z0-9._-]+$")
+
+# The server token stays strict. A fingerprint carries '/' (e.g. srv/0.1/schema-38), so
+# it needs its own class — do NOT widen VALID_SERVER to accept it.
+VALID_FINGERPRINT = re.compile(r"^[A-Za-z0-9._/-]+$")
+VALID_VERSION = re.compile(r"^[A-Za-z0-9.+_-]+$")
+VALID_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # The label used wherever a call's release could not be attributed from its own result.
 UNKNOWN = "unknown"
@@ -817,34 +828,75 @@ def to_text(result) -> str:
     return "\n".join(out)
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--server",
+        "server",
+        nargs="?",
         default="",
-        help="MCP server name or substring (empty/omitted → discovery mode "
-        "listing all servers)",
+        help="MCP server name or substring (omit → discovery mode listing all servers)",
     )
-    parser.add_argument(
-        "--root",
-        default=os.path.expanduser("~/.claude/projects"),
-        help="Directory of session transcripts",
-    )
-    parser.add_argument(
-        "--json", action="store_true", help="Emit JSON instead of a table"
-    )
-    parser.add_argument(
-        "--samples", type=int, default=3, help="Sample error texts per code"
-    )
-    args = parser.parse_args()
+    parser.add_argument("--server", dest="server_opt", default=None,
+                        help=argparse.SUPPRESS)  # back-compat with the old invocation
+    parser.add_argument("--server-version", default=None,
+                        help="Only calls whose result reported this server release (observed)")
+    parser.add_argument("--fingerprint", default=None,
+                        help="Only calls whose result reported this contract fingerprint (observed)")
+    parser.add_argument("--since", default=None, help="Only calls STARTED on/after this date (YYYY-MM-DD; approximate)")
+    parser.add_argument("--until", default=None, help="Only calls STARTED on/before this date (YYYY-MM-DD; approximate)")
+    parser.add_argument("--group-by", choices=("version", "fingerprint"), default="version",
+                        help="Dimension for the matrix and for scope-aware recovery")
+    parser.add_argument("--unknown", choices=("include", "exclude", "only"), default="include",
+                        help="Calls whose release could not be attributed")
+    parser.add_argument("--root", default=os.path.expanduser("~/.claude/projects"),
+                        help="Directory of session transcripts")
+    parser.add_argument("--json", action="store_true", help="Emit JSON instead of a table")
+    parser.add_argument("--samples", type=int, default=3, help="Sample error texts per code")
+    parser.add_argument("--args", dest="args_string", default=None,
+                        help="Raw argument string from the slash command; re-parsed as flags")
+    return parser
+
+
+def parse_argv(argv) -> argparse.Namespace:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.args_string is not None:
+        # The slash command interpolates $ARGUMENTS inside single quotes. A quote in the
+        # input would break out of them, so refuse it rather than risk a shell escape.
+        if "'" in args.args_string or '"' in args.args_string:
+            parser.error("quotes are not allowed in the command arguments")
+        args = parser.parse_args(shlex.split(args.args_string))
+
+    if args.server_opt is not None:  # legacy --server wins when explicitly given
+        args.server = args.server_opt
 
     server = (args.server or "").strip()
     if server and not VALID_SERVER.match(server):
-        parser.error(
-            f"invalid --server value {server!r}: expected characters in [A-Za-z0-9._-]"
-        )
+        parser.error(f"invalid server {server!r}: expected characters in [A-Za-z0-9._-]")
+    args.server = server
 
-    result = audit(args.root, server, args.samples)
+    if args.server_version and not VALID_VERSION.match(args.server_version):
+        parser.error(f"invalid --server-version {args.server_version!r}")
+    if args.fingerprint and not VALID_FINGERPRINT.match(args.fingerprint):
+        parser.error(f"invalid --fingerprint {args.fingerprint!r}")
+    for flag, value in (("--since", args.since), ("--until", args.until)):
+        if value and not VALID_DATE.match(value):
+            parser.error(f"invalid {flag} {value!r}: expected YYYY-MM-DD")
+    return args
+
+
+def main() -> None:
+    args = parse_argv(None)
+    filters = Filters(
+        server_version=args.server_version,
+        fingerprint=args.fingerprint,
+        since=args.since,
+        until=args.until,
+        group_by=args.group_by,
+        unknown=args.unknown,
+    )
+    result = audit(args.root, args.server, args.samples, filters)
     print(to_json(result) if args.json else to_text(result))
 
 

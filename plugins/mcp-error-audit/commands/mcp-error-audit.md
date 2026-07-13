@@ -1,12 +1,12 @@
 ---
 description: Audit MCP tool errors across all your Claude Code sessions and prioritize fixes
-argument-hint: "[server name or substring — letters/digits/._- only; empty lists all servers]"
+argument-hint: "[server] [--server-version X] [--fingerprint FP] [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--group-by version|fingerprint] [--unknown include|exclude|only]"
 allowed-tools: Bash(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/mcp_error_audit.py:*)
 ---
 
 ## Error audit data
 
-!`python3 ${CLAUDE_PLUGIN_ROOT}/scripts/mcp_error_audit.py --server '$ARGUMENTS'`
+!`python3 ${CLAUDE_PLUGIN_ROOT}/scripts/mcp_error_audit.py --args '$ARGUMENTS'`
 
 ## Your task
 
@@ -26,6 +26,20 @@ Subagent transcripts are folded into their parent session, and both bare and plu
 If the report includes a `WARNING:` that the matched servers look distinct, lead with that caveat and suggest narrowing the server argument, since the blended stats may mislead.
 `repair` hints come from each code's most recent occurrence that included one.
 Each sample line shows the occurrence date, the tool input, and the error text; `recov` counts errors followed later in the same transcript by a success of the same tool.
+
+If the report is scoped (`--server-version`, `--fingerprint`, `--since/--until`), say so in
+your answer, and carry its caveats:
+
+- A code absent from a version means **not observed in that version over the attributed
+  calls shown** — NOT "fixed". This tool reads transcripts; it cannot see a code change.
+  Say "not observed in 0.10.0 over N attributed calls", and only call something fixed if
+  you have separate evidence (a changelog entry, the code itself).
+- If the report says rates are PARTIAL, lead with that: they are computed over calls whose
+  release could be attributed, not over all calls.
+- If the report says the scope is date-based and APPROXIMATE, note that a date is a proxy
+  for a release and is wrong if the user upgraded late or ran a dev tree.
+- `cross` counts a later success of the same tool at a *different* version. It is NOT a
+  recovery — the environment changed — so treat that code's recovery as indeterminate.
 
 Analyze the report and give me a **prioritized, actionable list of what to fix** — do not just restate the table.
 Apply this lens; if an `agent-friendly-mcp` skill is available, apply its failure-recovery and tool-design guidance in addition, and where the two conflict, the numbered lens below wins.

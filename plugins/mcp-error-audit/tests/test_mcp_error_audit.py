@@ -5,6 +5,8 @@ import json
 import os
 import sys
 
+import pytest
+
 sys.path.insert(
     0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts")
 )
@@ -750,6 +752,43 @@ def test_matrix_aligns_columns_for_long_fingerprint_labels(tmp_path):
     # same for the data row's counts.
     assert header_row.split() == ["code", fp1, fp2]
     assert data_row.split() == ["old_code", "1", "1"]
+
+
+
+# --- CLI / slash-command argument passing -----------------------------------
+
+
+def test_args_string_round_trips_flags():
+    """The slash command hands the script ONE raw string. It must reach the parser as
+    flags — this is the test that catches the '--server' interpolation blocker."""
+    args = mea.parse_argv(["--args", "codex --server-version 0.10.0 --group-by version"])
+    assert args.server == "codex"
+    assert args.server_version == "0.10.0"
+    assert args.group_by == "version"
+
+
+def test_args_string_bare_server_and_empty():
+    assert mea.parse_argv(["--args", "codex"]).server == "codex"
+    assert mea.parse_argv(["--args", ""]).server == ""  # discovery mode
+
+
+def test_args_string_rejects_quotes():
+    """The command substitutes $ARGUMENTS inside single quotes; a quote in the input
+    would break out of them. Refuse rather than risk a shell escape."""
+    with pytest.raises(SystemExit):
+        mea.parse_argv(["--args", "codex --since '2026-07-12'"])
+
+
+def test_fingerprint_validation_allows_slashes_server_does_not():
+    args = mea.parse_argv(["--args", "codex --fingerprint codex-in-claude/0.1/schema-38"])
+    assert args.fingerprint == "codex-in-claude/0.1/schema-38"
+    with pytest.raises(SystemExit):
+        mea.parse_argv(["--args", "codex/evil"])  # server token stays strict
+
+
+def test_date_validation_rejects_non_iso():
+    with pytest.raises(SystemExit):
+        mea.parse_argv(["--args", "codex --since july"])
 
 
 def test_discovery_output_is_unchanged_by_version_work(tmp_path):
