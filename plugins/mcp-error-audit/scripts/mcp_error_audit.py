@@ -272,6 +272,94 @@ def session_key(path: str, root: str) -> str:
 
 
 @dataclass
+class CallRecord:
+    """One MCP tool call and its outcome.
+
+    Attribution (`version`/`fingerprint`, or `unknown_reason`) and classification
+    (`is_error`/`code`) are INDEPENDENT: a call whose release cannot be attributed may
+    still be a real error, and is still counted as one.
+    """
+
+    input_id: str
+    server: str
+    tool: str
+    session: str
+    ts: str | None
+    input: str
+    text: str = ""
+    version: str | None = None
+    fingerprint: str | None = None
+    unknown_reason: str | None = None
+    is_error: bool = False
+    code: str | None = None
+    retryable: bool | None = None
+    repair: str | None = None
+
+    def scope(self, group_by: str) -> str:
+        """This call's bucket under the chosen dimension; UNKNOWN when unattributed."""
+        value = self.fingerprint if group_by == "fingerprint" else self.version
+        return value or UNKNOWN
+
+
+def records_for_file(path: str, root: str) -> list[CallRecord]:
+    """Every MCP call in one transcript, in RESULT order, unpaired calls last.
+
+    Result order (not call order) is what recovery reasons about: an error "recovers"
+    when a later RESULT for the same tool succeeds.
+    """
+    session = session_key(path, root)
+    calls: dict[str, CallRecord] = {}
+    for rec in iter_records(path):
+        ts = record_ts(rec)
+        for item in message_content(rec):
+            if not (isinstance(item, dict) and item.get("type") == "tool_use"):
+                continue
+            parsed = parse_tool_name(item.get("name") or "")
+            tid = item.get("id")
+            if not parsed or not tid:
+                continue
+            server, tool = parsed
+            raw = json.dumps(item.get("input", {}), sort_keys=True, default=str)
+            calls[tid] = CallRecord(
+                input_id=tid,
+                server=server,
+                tool=tool,
+                session=session,
+                ts=ts,
+                input=" ".join(raw.split())[:120],
+            )
+
+    ordered: list[CallRecord] = []
+    for rec in iter_records(path):
+        for item in message_content(rec):
+            if not (isinstance(item, dict) and item.get("type") == "tool_result"):
+                continue
+            call = calls.pop(item.get("tool_use_id") or "", None)
+            if call is None:
+                continue
+            text = result_text(item)
+            obj = parse_envelope(text)
+            call.text = text
+            call.is_error = is_error_result(item, obj)
+            if call.is_error:
+                call.code, call.retryable, call.repair = classify(text, obj)
+            if not isinstance(obj, dict):
+                call.unknown_reason = "unparseable_result"
+            else:
+                call.version = extract_version(obj)
+                call.fingerprint = extract_fingerprint(obj)
+                if call.version is None and call.fingerprint is None:
+                    call.unknown_reason = "not_emitted"
+            ordered.append(call)
+
+    # Calls never answered: no result to attribute from, and no outcome to classify.
+    for call in calls.values():
+        call.unknown_reason = "no_result"
+        ordered.append(call)
+    return ordered
+
+
+@dataclass
 class CodeStat:
     count: int = 0
     recovered: int = 0
@@ -321,7 +409,82 @@ class ServerStat:
     last_call: str | None = None
 
 
-def audit(root: str, server: str, samples: int):
+@dataclass
+class Coverage:
+    total_calls: int = 0
+    attributed_calls: int = 0
+    unknown: collections.Counter = field(default_factory=collections.Counter)
+
+    def partial(self) -> bool:
+        """True when some calls could not be attributed — every rate is then partial."""
+        return sum(self.unknown.values()) > 0
+
+
+@dataclass
+class Filters:
+    server_version: str | None = None
+    fingerprint: str | None = None
+    since: str | None = None
+    until: str | None = None
+    group_by: str = "version"
+    unknown: str = "include"
+
+    def selects(self, rec: CallRecord, coverage: Coverage) -> bool:
+        return True
+
+
+def aggregate(
+    records: list[CallRecord],
+    filters: Filters,
+    samples: int,
+    codes: dict[str, "CodeStat"],
+    total_calls: collections.Counter,
+    total_errors: collections.Counter,
+    audit_sessions: set[str],
+    coverage: Coverage,
+) -> None:
+    """Fold one transcript's selected call records into the running totals.
+
+    Recovery is scoped per file: a later SUCCESS for the same tool retires the codes
+    still `pending` for that tool. Records must arrive in the RESULT order
+    `records_for_file` returns (unpaired calls last) so recovery sees results in the
+    order they actually landed, and unanswered calls never masquerade as a success.
+    """
+    pending: dict[str, list[str]] = collections.defaultdict(list)
+    for rec in records:
+        total_calls[rec.tool] += 1
+        audit_sessions.add(rec.session)
+        coverage.total_calls += 1
+        if rec.unknown_reason is None:
+            coverage.attributed_calls += 1
+        else:
+            coverage.unknown[rec.unknown_reason] += 1
+
+        if rec.unknown_reason == "no_result":
+            continue  # never answered: nothing to classify or recover
+
+        if not rec.is_error:
+            for code in pending.pop(rec.tool, []):
+                codes[code].recovered += 1
+            continue
+
+        total_errors[rec.tool] += 1
+        assert rec.code is not None  # classify() always sets code when is_error is True
+        stat = codes[rec.code]
+        stat.count += 1
+        stat.sessions.add(rec.session)
+        stat.tools[rec.tool] += 1
+        if stat.see(rec.ts):
+            if rec.retryable is not None:
+                stat.retryable = rec.retryable
+            if rec.repair:
+                stat.repair = rec.repair
+        stat.add_sample(rec.ts, rec.input, rec.text, samples)
+        pending[rec.tool].append(rec.code)
+
+
+def audit(root: str, server: str, samples: int, filters: "Filters | None" = None):
+    filters = filters or Filters()
     files = sorted(glob(os.path.join(root, "**", "*.jsonl"), recursive=True))
     all_sessions = {session_key(p, root) for p in files}
     needle = server.lower()
@@ -331,76 +494,29 @@ def audit(root: str, server: str, samples: int):
     total_errors = collections.Counter()
     codes: dict[str, CodeStat] = collections.defaultdict(CodeStat)
     audit_sessions: set[str] = set()
+    coverage = Coverage()
 
     for path in files:
-        session = session_key(path, root)
+        records = records_for_file(path, root)
 
-        id2parsed: dict[str, tuple[str, str]] = {}
-        id2input: dict[str, str] = {}
-        for rec in iter_records(path):
-            ts = record_ts(rec)
-            for item in message_content(rec):
-                if not (isinstance(item, dict) and item.get("type") == "tool_use"):
-                    continue
-                parsed = parse_tool_name(item.get("name") or "")
-                if not parsed:
-                    continue
-                tid = item.get("id")
-                if tid:
-                    id2parsed[tid] = parsed
-                srv, tool = parsed
-                sstat = servers[srv]
-                sstat.calls += 1
-                sstat.sessions.add(session)
-                if ts and (sstat.last_call is None or ts > sstat.last_call):
-                    sstat.last_call = ts
-                if needle and needle in srv.lower():
-                    total_calls[tool] += 1
-                    audit_sessions.add(session)
-                    if tid:
-                        raw = json.dumps(
-                            item.get("input", {}), sort_keys=True, default=str
-                        )
-                        id2input[tid] = " ".join(raw.split())[:120]
+        # Discovery-mode stats cover EVERY server and are deliberately unfiltered and
+        # unversioned: they keep their all-call denominator (see the spec).
+        for rec in records:
+            sstat = servers[rec.server]
+            sstat.calls += 1
+            sstat.sessions.add(rec.session)
+            if rec.is_error:
+                sstat.errors += 1
+            if rec.ts and (sstat.last_call is None or rec.ts > sstat.last_call):
+                sstat.last_call = rec.ts
 
-        # An error "recovers" when a later result for the same tool in the
-        # same transcript succeeds; pending holds codes awaiting that success.
-        pending: dict[str, list[str]] = collections.defaultdict(list)
-        for rec in iter_records(path):
-            ts = record_ts(rec)
-            for item in message_content(rec):
-                if not (isinstance(item, dict) and item.get("type") == "tool_result"):
-                    continue
-                parsed = id2parsed.get(item.get("tool_use_id") or "")
-                if not parsed:
-                    continue
-                srv, tool = parsed
-                text = result_text(item)
-                obj = parse_envelope(text)
-                err = is_error_result(item, obj)
-                if err:
-                    servers[srv].errors += 1
-                if not (needle and needle in srv.lower()):
-                    continue
-                if not err:
-                    for code in pending.pop(tool, []):
-                        codes[code].recovered += 1
-                    continue
-                total_errors[tool] += 1
-                code, retryable, repair = classify(text, obj)
-                stat = codes[code]
-                stat.count += 1
-                stat.sessions.add(session)
-                stat.tools[tool] += 1
-                if stat.see(ts):
-                    if retryable is not None:
-                        stat.retryable = retryable
-                    if repair:
-                        stat.repair = repair
-                stat.add_sample(
-                    ts, id2input.get(item.get("tool_use_id") or "", "?"), text, samples
-                )
-                pending[tool].append(code)
+        if not needle:
+            continue
+
+        matched = [r for r in records if needle in r.server.lower()]
+        selected = [r for r in matched if filters.selects(r, coverage)]
+        aggregate(selected, filters, samples, codes, total_calls, total_errors,
+                  audit_sessions, coverage)
 
     return {
         "server": server,
@@ -412,6 +528,8 @@ def audit(root: str, server: str, samples: int):
         "total_calls": total_calls,
         "total_errors": total_errors,
         "codes": codes,
+        "coverage": coverage,
+        "filters": filters,
     }
 
 

@@ -325,3 +325,88 @@ def test_extract_rejects_non_string_and_empty():
     assert mea.extract_version({"server_version": ""}) is None
     assert mea.extract_version({"server_version": 10}) is None
     assert mea.extract_version({"meta": "not-a-dict"}) is None
+
+
+# --- call records -----------------------------------------------------------
+
+
+def test_records_attribute_version_and_fingerprint(tmp_path):
+    root = str(tmp_path)
+    body = json.dumps(
+        {"ok": True, "meta": {"server_version": "0.10.0", "fingerprint": "srv/0.1/schema-38"}}
+    )
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {"a": 1}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", body, "2026-07-01T00:00:01Z"),
+        ],
+    )
+    recs = mea.records_for_file(os.path.join(root, "proj", "s1.jsonl"), root)
+    assert len(recs) == 1
+    assert recs[0].tool == "go"
+    assert recs[0].version == "0.10.0"
+    assert recs[0].fingerprint == "srv/0.1/schema-38"
+    assert recs[0].unknown_reason is None
+    assert recs[0].is_error is False
+
+
+def test_records_unknown_reasons(tmp_path):
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            # no paired result at all (aborted / interrupted)
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            # a result with no JSON envelope
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+            tool_result("t2", "MCP error -32000: Connection closed", "2026-07-01T00:01:01Z", True),
+            # a well-formed envelope that carries no version
+            tool_use("t3", "mcp__srv__go", {}, "2026-07-01T00:02:00Z"),
+            tool_result("t3", json.dumps({"ok": True, "data": 1}), "2026-07-01T00:02:01Z"),
+        ],
+    )
+    recs = {r.input_id: r for r in mea.records_for_file(os.path.join(root, "proj", "s1.jsonl"), root)}
+    assert recs["t1"].unknown_reason == "no_result"
+    assert recs["t2"].unknown_reason == "unparseable_result"
+    assert recs["t3"].unknown_reason == "not_emitted"
+    assert all(r.version is None for r in recs.values())
+
+
+def test_unparseable_error_is_still_an_error(tmp_path):
+    """Attribution and classification are orthogonal.
+
+    A transport drop carries no envelope, so its release is unknown — but it is still a
+    REAL error and must stay in the error totals. Sweeping it into an 'unknown' bucket
+    that reads as 'not an error' would erase genuine transport failures.
+    """
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", "MCP error -32000: Connection closed", "2026-07-01T00:00:01Z", True),
+        ],
+    )
+    (rec,) = mea.records_for_file(os.path.join(root, "proj", "s1.jsonl"), root)
+    assert rec.is_error is True
+    assert rec.code == "transport_connection_closed"
+    assert rec.version is None
+    assert rec.unknown_reason == "unparseable_result"
+
+
+def test_records_are_in_result_order_with_unpaired_last(tmp_path):
+    root = str(tmp_path)
+    ok = json.dumps({"ok": True, "meta": {"server_version": "1.0.0"}})
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+            tool_use("t3", "mcp__srv__go", {}, "2026-07-01T00:02:00Z"),  # never answered
+            tool_result("t2", ok, "2026-07-01T00:03:00Z"),
+            tool_result("t1", ok, "2026-07-01T00:04:00Z"),
+        ],
+    )
+    recs = mea.records_for_file(os.path.join(root, "proj", "s1.jsonl"), root)
+    assert [r.input_id for r in recs] == ["t2", "t1", "t3"]
