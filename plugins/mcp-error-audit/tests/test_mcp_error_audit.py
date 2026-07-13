@@ -1065,12 +1065,31 @@ def test_matrix_aligns_columns_for_long_fingerprint_labels(tmp_path):
     header_idx = lines.index("## Errors by code × fingerprint")
     header_row = lines[header_idx + 1]
     data_row = next(ln for ln in lines[header_idx + 2 :] if ln.startswith("old_code"))
+    calls_row = next(ln for ln in lines[header_idx + 2 :] if ln.startswith("calls"))
 
-    # If the columns ran together (the bug), the two fingerprint labels would
-    # merge into a single whitespace token instead of tokenizing separately —
-    # same for the data row's counts.
     assert header_row.split() == ["code", fp1, fp2]
     assert data_row.split() == ["old_code", "1", "1"]
+
+    # The assertions above are NOT enough on their own: .split() is invariant to column
+    # width, because there is always at least one space separating the fields. They pass
+    # unchanged with `col_width = 14` reintroduced. Alignment is a property of the
+    # RENDERED WIDTH, so pin that: every row of the matrix must be exactly as wide as
+    # every other, which is true iff each column is sized to its widest label.
+    # Under the bug the 29-char labels overrun their 14-char cells and the header row
+    # renders 94 chars against a 64-char data row.
+    widths = {len(header_row), len(data_row), len(calls_row)}
+    assert widths == {len(header_row)}, (
+        f"matrix rows are ragged — columns are not sized to their labels: "
+        f"header={len(header_row)} data={len(data_row)} calls={len(calls_row)}"
+    )
+    # And the columns land where the labels do: each count's right edge sits under the
+    # right edge of its own header label.
+    for i, fp in enumerate((fp1, fp2)):
+        col_end = header_row.index(fp) + len(fp)
+        assert data_row[:col_end].rstrip().endswith("1")
+        assert len(data_row[:col_end].rstrip()) == col_end, (
+            f"column {i} ({fp}) count is not right-aligned under its header label"
+        )
 
 
 
