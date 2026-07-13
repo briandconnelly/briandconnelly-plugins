@@ -588,7 +588,15 @@ def aggregate(
         if not rec.is_error:
             for (tool, pend_scope) in [k for k in pending if k[0] == rec.tool]:
                 for code in pending.pop((tool, pend_scope)):
-                    if pend_scope == scope:
+                    # Recovery requires BOTH ends to be attributed to the SAME scope.
+                    # UNKNOWN is not a scope that can equal itself: two calls that each
+                    # carry no version may well be from different releases, so a success
+                    # at an unknown scope is evidence of nothing, and an error at an
+                    # unknown scope is recovered by nothing. Report those as
+                    # indeterminate. Comparing pend_scope == scope alone made unknown ==
+                    # unknown true and quietly restored the old unscoped semantics —
+                    # across the entire corpus, where no call carries a version yet.
+                    if scope != UNKNOWN and pend_scope == scope:
                         codes[code].recovered += 1
                     else:
                         codes[code].cross_version_success += 1

@@ -203,7 +203,12 @@ def test_samples_are_recent_dated_and_carry_inputs(tmp_path):
     result = mea.audit(root, "srv", 3)
     stat = result["codes"]["not_found"]
     assert stat.count == 5
-    assert stat.recovered == 1
+    # This fixture's envelopes carry NO version, so every call's scope is `unknown`.
+    # This assertion previously read `stat.recovered == 1` — it encoded the bug that
+    # unknown == unknown counts as a same-release recovery. Two calls that each carry
+    # no version may be from different releases; the honest answer is indeterminate.
+    assert stat.recovered == 0
+    assert stat.cross_version_success == 1
     assert stat.first_seen.startswith("2026-06-01")
     assert stat.last_seen.startswith("2026-07-04")
     # 5 errors, limit 3 → the 3 most recent survive
@@ -496,6 +501,76 @@ def test_recovery_counts_within_the_same_version(tmp_path):
     stat = mea.audit(root, "srv", 3)["codes"]["boom_code"]
     assert stat.recovered == 1
     assert stat.cross_version_success == 0
+
+
+def _pair(root, err_body, ok_body):
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", err_body, "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+            tool_result("t2", ok_body, "2026-07-01T00:01:01Z"),
+        ],
+    )
+
+
+def test_a_success_at_an_unknown_scope_is_never_recovery(tmp_path):
+    """The spec: "A later success at a different OR UNKNOWN scope does not count as
+    recovery." aggregate() compared pend_scope == scope, so two calls that BOTH carry no
+    version compared equal — unknown == unknown — and the success was credited as a
+    same-release recovery.
+
+    Since nothing stamps a version yet, EVERY call today is version-unknown: scope-aware
+    recovery was inert by default, `recov` silently reverted to the old unscoped
+    semantics, and `cross` read a reassuring 0.
+    """
+    unknown_err = envelope("boom_code")  # well-formed envelope, no version
+    unknown_ok = json.dumps({"ok": True})
+
+    # unknown → unknown: NOT a recovery. Both calls could be from different releases.
+    root = str(tmp_path / "uu")
+    _pair(root, unknown_err, unknown_ok)
+    stat = mea.audit(root, "srv", 3)["codes"]["boom_code"]
+    assert stat.recovered == 0
+    assert stat.cross_version_success == 1
+
+    # known error → unknown success: the success proves nothing about 1.0.0.
+    root = str(tmp_path / "ku")
+    _pair(root, _versioned_error("boom_code", "1.0.0"), unknown_ok)
+    stat = mea.audit(root, "srv", 3)["codes"]["boom_code"]
+    assert stat.recovered == 0
+    assert stat.cross_version_success == 1
+
+    # unknown error → known success: the error is not "recovered" by anything.
+    root = str(tmp_path / "uk")
+    _pair(root, unknown_err, _versioned_ok("1.0.0"))
+    stat = mea.audit(root, "srv", 3)["codes"]["boom_code"]
+    assert stat.recovered == 0
+    assert stat.cross_version_success == 1
+
+    # POSITIVE CONTROL: recovery is still reachable — an attributed scope recovers itself.
+    # (Otherwise `recovered == 0` above would be indistinguishable from a dead counter.)
+    root = str(tmp_path / "kk")
+    _pair(root, _versioned_error("boom_code", "1.0.0"), _versioned_ok("1.0.0"))
+    stat = mea.audit(root, "srv", 3)["codes"]["boom_code"]
+    assert stat.recovered == 1
+    assert stat.cross_version_success == 0
+
+    # And under --group-by fingerprint, a fingerprinted corpus recovers normally: the
+    # rule is about UNATTRIBUTED scopes, not about versions specifically.
+    root = str(tmp_path / "fp")
+    fp_err = json.dumps(
+        {"ok": False, "error": {"code": "boom_code", "message": "b", "retryable": False},
+         "meta": {"fingerprint": "srv/0.1/schema-38"}}
+    )
+    fp_ok = json.dumps({"ok": True, "meta": {"fingerprint": "srv/0.1/schema-38"}})
+    _pair(root, fp_err, fp_ok)
+    by_fp = mea.audit(root, "srv", 3, mea.Filters(group_by="fingerprint"))["codes"]["boom_code"]
+    assert by_fp.recovered == 1
+    by_ver = mea.audit(root, "srv", 3, mea.Filters(group_by="version"))["codes"]["boom_code"]
+    assert by_ver.recovered == 0  # same corpus, no version: indeterminate
+    assert by_ver.cross_version_success == 1
 
 
 def test_multi_version_folded_session_attributes_each_call(tmp_path):
