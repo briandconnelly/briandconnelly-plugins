@@ -895,7 +895,6 @@ def to_text(result) -> str:
         # data stay aligned instead of running together. MIN_SCOPE_COL keeps narrow
         # counts from crowding a short label like "1.0.0".
         col_width = max(MIN_SCOPE_COL, max(len(sc) for sc in scopes))
-        errs = errors_by_scope(result)
         out.append(f"\n## Errors by code × {dim}")
         header = f"{'code':<34}" + "".join(f" {sc:>{col_width}}" for sc in scopes)
         out.append(header)
