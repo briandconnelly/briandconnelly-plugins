@@ -749,6 +749,60 @@ def test_matrix_shows_code_by_version(tmp_path):
     assert new_code_row.split() == ["new_code", "0", "1"]
 
 
+def _clean_release_corpus(root):
+    """1.0.0: one error, no clean calls. 2.0.0: twenty clean calls, zero errors."""
+    records = [
+        tool_use("t0", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+        tool_result("t0", _versioned_error("old_code", "1.0.0"), "2026-07-01T00:00:01Z", True),
+    ]
+    for i in range(20):
+        records.append(tool_use(f"v{i}", "mcp__srv__go", {}, f"2026-07-10T00:{i:02d}:00Z"))
+        records.append(tool_result(f"v{i}", _versioned_ok("2.0.0"), f"2026-07-10T00:{i:02d}:01Z"))
+    write_jsonl(os.path.join(root, "proj", "s1.jsonl"), records)
+
+
+def test_calls_are_counted_by_scope_not_only_errors(tmp_path):
+    """The denominator for 'not observed in 2.0.0 over N attributed calls' must EXIST.
+
+    aggregate() counted calls only by tool, and CodeStat.by_scope counted only errors,
+    so there was no per-scope call denominator anywhere. The flagship sentence in the
+    spec was literally uncomputable.
+    """
+    root = str(tmp_path)
+    _clean_release_corpus(root)
+    cov = mea.audit(root, "srv", 3)["coverage"]
+    assert cov.calls_by_scope == collections.Counter({"1.0.0": 1, "2.0.0": 20})
+    assert cov.total_calls == 21
+    assert cov.attributed_calls == 21
+    assert cov.total_calls == cov.attributed_calls + sum(cov.unknown.values())
+
+    data = json.loads(mea.to_json(mea.audit(root, "srv", 3)))
+    assert data["coverage"]["calls_by_scope"] == {"1.0.0": 1, "2.0.0": 20}
+
+
+def test_zero_error_release_still_gets_a_matrix_column(tmp_path):
+    """A release with 20 clean calls and zero errors must APPEAR in the matrix.
+
+    Columns were derived from ERROR scopes, so the release the user is actually
+    running — clean so far — did not appear at all, and the audit said nothing about
+    the one question it exists to answer.
+    """
+    root = str(tmp_path)
+    _clean_release_corpus(root)
+    text = mea.to_text(mea.audit(root, "srv", 3))
+    lines = text.splitlines()
+    header_idx = lines.index("## Errors by code × version")
+    header_row = lines[header_idx + 1]
+    assert header_row.split() == ["code", "1.0.0", "2.0.0"]
+
+    old_row = next(ln for ln in lines[header_idx + 2 :] if ln.startswith("old_code"))
+    assert old_row.split() == ["old_code", "1", "0"]
+
+    # The per-column denominator: the N in "not observed in 2.0.0 over N calls".
+    calls_row = next(ln for ln in lines[header_idx + 2 :] if ln.startswith("calls"))
+    assert calls_row.split() == ["calls", "1", "20"]
+
+
 def test_text_report_says_not_observed_never_fixed(tmp_path):
     root = str(tmp_path)
     _two_version_corpus(root)

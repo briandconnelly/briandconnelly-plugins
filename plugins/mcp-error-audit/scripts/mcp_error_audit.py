@@ -463,6 +463,13 @@ class Coverage:
     total_calls: int = 0
     attributed_calls: int = 0
     unknown: collections.Counter = field(default_factory=collections.Counter)
+    # CALLS (not errors) per scope — the only honest denominator for a per-scope rate,
+    # and the N in "not observed in 0.10.0 over N attributed calls". Errors alone cannot
+    # supply it: a release with zero errors has no error rows at all, yet it is exactly
+    # the release the user is running and asking about. Includes an UNKNOWN key when
+    # some selected calls could not be attributed, so the buckets sum to every call
+    # aggregate() saw.
+    calls_by_scope: collections.Counter = field(default_factory=collections.Counter)
 
     def partial(self) -> bool:
         """True when some calls could not be attributed — every rate is then partial."""
@@ -552,6 +559,10 @@ def aggregate(
         total_calls[rec.tool] += 1
         audit_sessions.add(rec.session)
         coverage.total_calls += 1
+        # Count the CALL against its scope, whether or not it errored. A clean release
+        # must still get a column (and a denominator) — otherwise the release with no
+        # errors yet is invisible in the report.
+        coverage.calls_by_scope[scope] += 1
         # Attribution is judged against filters.group_by, the ACTIVE dimension — not
         # against whether the record has ANY identity at all. A call with only a
         # fingerprint is not attributed when the matrix and header are keyed by
@@ -651,6 +662,36 @@ def sorted_codes(result):
     return sorted(result["codes"].items(), key=lambda kv: -kv[1].count)
 
 
+def errors_by_scope(result) -> collections.Counter:
+    """Errors per scope — the numerator whose denominator is coverage.calls_by_scope."""
+    total = collections.Counter()
+    for stat in result["codes"].values():
+        total.update(stat.by_scope)
+    return total
+
+
+def matrix_scopes(result) -> list[str]:
+    """The matrix's columns, derived from CALL scopes — not error scopes.
+
+    A release whose calls all succeeded has no error rows, but it still gets a column
+    (all zeros, over a real call denominator). The error scopes are unioned in purely
+    defensively; they are a subset of the call scopes by construction. UNKNOWN sorts
+    last so observed releases read left-to-right.
+    """
+    scopes = set(result["coverage"].calls_by_scope) | {
+        sc for stat in result["codes"].values() for sc in stat.by_scope
+    }
+    return sorted(scopes, key=lambda sc: (sc == UNKNOWN, sc))
+
+
+def scope_rate(result, scope: str) -> str:
+    """One scope's error rate, over THAT scope's own calls. Never a global denominator."""
+    calls = result["coverage"].calls_by_scope.get(scope, 0)
+    if not calls:
+        return "n/a"
+    return f"{100 * errors_by_scope(result).get(scope, 0) / calls:.1f}%"
+
+
 def matched_last_call(result) -> str | None:
     """Newest call timestamp across the matched servers, for staleness anchoring."""
     stamps = [
@@ -731,6 +772,10 @@ def to_json(result) -> str:
                 "partial": result["coverage"].partial(),
                 "group_by": result["filters"].group_by,
                 "date_scoped": result["filters"].date_scoped(),
+                # Per-scope CALL denominators and their matching numerators. A consumer
+                # can compute any per-scope rate without ever reaching for a global count.
+                "calls_by_scope": dict(result["coverage"].calls_by_scope),
+                "errors_by_scope": dict(errors_by_scope(result)),
             },
         },
         indent=2,
@@ -818,13 +863,14 @@ def to_text(result) -> str:
             "--server-version or --fingerprint, which are observed in the envelope."
         )
 
-    scopes = sorted({sc for s in result["codes"].values() for sc in s.by_scope})
+    scopes = matrix_scopes(result)
     if scopes:
         # Column width follows the widest scope label (version strings are short;
         # fingerprints like "codex-in-claude/0.1/schema-38" are not) so headers and
         # data stay aligned instead of running together. MIN_SCOPE_COL keeps narrow
         # counts from crowding a short label like "1.0.0".
         col_width = max(MIN_SCOPE_COL, max(len(sc) for sc in scopes))
+        errs = errors_by_scope(result)
         out.append(f"\n## Errors by code × {dim}")
         header = f"{'code':<34}" + "".join(f" {sc:>{col_width}}" for sc in scopes)
         out.append(header)
@@ -833,10 +879,24 @@ def to_text(result) -> str:
                 f" {s.by_scope.get(sc, 0):>{col_width}}" for sc in scopes
             )
             out.append(row)
+        out.append("-" * 34 + "".join(" " + "-" * col_width for _ in scopes))
+        # Each column's OWN denominator. Without it the report could only offer the
+        # global call count, and pinning a cross-release denominator to one release
+        # is precisely the lying statistic this tool refuses to print.
         out.append(
-            "\nA zero above means NOT OBSERVED in that "
-            f"{dim} over the attributed calls shown — not a fix. This tool reads "
-            "transcripts; it cannot see a code change."
+            f"{'calls':<34}"
+            + "".join(
+                f" {cov.calls_by_scope.get(sc, 0):>{col_width}}" for sc in scopes
+            )
+        )
+        out.append(f"{'err%':<34}" + "".join(f" {scope_rate(result, sc):>{col_width}}" for sc in scopes))
+        out.append(
+            f"\ncalls = calls observed at that {dim}; it is the denominator for that "
+            f"column's err% — no other {dim}'s calls are mixed in. In the `unknown` "
+            f"column those calls carry no {dim} in their own result.\n"
+            f"A zero in a code's row means NOT OBSERVED in that {dim} over that "
+            "column's calls — not a fix. This tool reads transcripts; it cannot see a "
+            "code change."
         )
 
     out.append("\n## Per-tool")
