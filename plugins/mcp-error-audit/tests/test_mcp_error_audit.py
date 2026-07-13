@@ -822,10 +822,35 @@ def test_args_string_bare_server_and_empty():
 
 
 def test_args_string_rejects_quotes():
-    """The command substitutes $ARGUMENTS inside single quotes; a quote in the input
-    would break out of them. Refuse rather than risk a shell escape."""
+    """Defense-in-depth at the PYTHON layer only: a stray quote in --args would
+    otherwise produce a confusing shlex parse. This does NOT and cannot prevent shell
+    injection — bash tokenizes $ARGUMENTS before python ever runs; the allowed-tools
+    allowlist in commands/mcp-error-audit.md is what guards that layer."""
     with pytest.raises(SystemExit):
         mea.parse_argv(["--args", "codex --since '2026-07-12'"])
+
+
+def test_args_string_trailing_backslash_is_a_clean_error():
+    """A trailing backslash with no quotes passes the quote check but makes
+    shlex.split raise ValueError('No escaped character'). That must surface as a
+    clean parser.error (SystemExit, exit code 2), not an uncaught traceback."""
+    with pytest.raises(SystemExit) as exc_info:
+        mea.parse_argv(["--args", "codex --since 2026-07-12\\"])
+    assert exc_info.value.code == 2
+
+
+def test_unknown_only_with_server_version_is_rejected():
+    """--unknown only paired with --server-version is vacuous by construction: an
+    unattributed record can never equal a specific observed version, so the result
+    is always empty regardless of corpus. Reject it at validation time instead of
+    silently reporting zero results."""
+    with pytest.raises(SystemExit):
+        mea.parse_argv(["--args", "codex --unknown only --server-version 0.10.0"])
+
+
+def test_unknown_only_with_fingerprint_is_rejected():
+    with pytest.raises(SystemExit):
+        mea.parse_argv(["--args", "codex --unknown only --fingerprint srv/0.1/schema-38"])
 
 
 def test_fingerprint_validation_allows_slashes_server_does_not():

@@ -911,11 +911,20 @@ def parse_argv(argv) -> argparse.Namespace:
     args = parser.parse_args(argv)
 
     if args.args_string is not None:
-        # The slash command interpolates $ARGUMENTS inside single quotes. A quote in the
-        # input would break out of them, so refuse it rather than risk a shell escape.
+        # Defense-in-depth at the PYTHON layer only: rejecting quotes here keeps a
+        # stray quote from producing a confusing shlex parse. It does NOT and cannot
+        # prevent shell injection: bash tokenizes the interpolated $ARGUMENTS before
+        # this script ever runs, so anything that breaks out of the shell quoting in
+        # commands/mcp-error-audit.md has already happened by the time we see argv.
+        # The `allowed-tools` allowlist in that command file is what guards the shell
+        # layer.
         if "'" in args.args_string or '"' in args.args_string:
             parser.error("quotes are not allowed in the command arguments")
-        args = parser.parse_args(shlex.split(args.args_string))
+        try:
+            split = shlex.split(args.args_string)
+        except ValueError as exc:
+            parser.error(f"could not parse command arguments: {exc}")
+        args = parser.parse_args(split)
 
     if args.server_opt is not None:  # legacy --server wins when explicitly given
         args.server = args.server_opt
@@ -932,6 +941,18 @@ def parse_argv(argv) -> argparse.Namespace:
     for flag, value in (("--since", args.since), ("--until", args.until)):
         if value and not VALID_DATE.match(value):
             parser.error(f"invalid {flag} {value!r}: expected YYYY-MM-DD")
+    if args.unknown == "only" and (args.server_version or args.fingerprint):
+        # An unattributed record has no version/fingerprint to compare, so it can
+        # never equal a specific observed value. --unknown only combined with
+        # --server-version or --fingerprint is vacuous by construction: the result
+        # is always empty, regardless of corpus. Reject rather than silently
+        # report zero results, which reads as "your corpus has none".
+        parser.error(
+            "--unknown only combined with --server-version/--fingerprint always "
+            "yields zero results: an unattributed record can never match a "
+            "specific observed value. Drop --unknown only, or drop the version/"
+            "fingerprint filter."
+        )
     return args
 
 
