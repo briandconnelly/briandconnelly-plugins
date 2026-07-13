@@ -1277,17 +1277,88 @@ def test_args_string_trailing_backslash_is_a_clean_error():
 
 
 def test_unknown_only_with_server_version_is_rejected():
-    """--unknown only paired with --server-version is vacuous by construction: an
-    unattributed record can never equal a specific observed version, so the result
-    is always empty regardless of corpus. Reject it at validation time instead of
-    silently reporting zero results."""
+    """--unknown only paired with a filter on the ACTIVE dimension is vacuous by
+    construction: an unattributed record can never equal a specific observed value, so
+    the result is always empty regardless of corpus. Reject it at validation time instead
+    of silently reporting zero results."""
     with pytest.raises(SystemExit):
         mea.parse_argv(["--args", "codex --unknown only --server-version 0.10.0"])
 
 
 def test_unknown_only_with_fingerprint_is_rejected():
+    """Same vacuity, but only when fingerprint IS the active dimension."""
     with pytest.raises(SystemExit):
-        mea.parse_argv(["--args", "codex --unknown only --fingerprint srv/0.1/schema-38"])
+        mea.parse_argv(
+            ["--args", "codex --group-by fingerprint --unknown only "
+                       "--fingerprint srv/0.1/schema-38"]
+        )
+
+
+def test_unknown_only_allows_a_filter_on_the_OTHER_dimension(tmp_path):
+    """The vacuity is dimension-relative, and the rejection must be too.
+
+    `--group-by version --unknown only --fingerprint fp-1` asks "which calls from
+    fingerprint fp-1 stamp no version?" — the exact shape of the corpus that exists today,
+    where servers stamp a fingerprint and no version. It is answerable and NON-EMPTY. The
+    first version of the check rejected any identity filter and so refused the question.
+
+    Both directions are covered: the inverse (group by fingerprint, filter by version) is
+    equally legitimate.
+    """
+    args = mea.parse_argv(
+        ["--args", "codex --group-by version --unknown only --fingerprint fp-1"]
+    )
+    assert args.unknown == "only" and args.fingerprint == "fp-1"
+    mea.parse_argv(
+        ["--args", "codex --group-by fingerprint --unknown only --server-version 1.0.0"]
+    )
+
+    # NEGATIVE CONTROL: the combo the parser now admits must actually return rows —
+    # a check that only proves argparse is quiet would be worthless.
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result(
+                "t1",
+                json.dumps({"error": {"code": "fp_code"}, "meta": {"fingerprint": "fp-1"}}),
+                "2026-07-01T00:00:01Z",
+                True,
+            ),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-02T00:00:00Z"),
+            tool_result(
+                "t2",
+                json.dumps({"error": {"code": "other"}, "meta": {"fingerprint": "fp-2"}}),
+                "2026-07-02T00:00:01Z",
+                True,
+            ),
+        ],
+    )
+    res = mea.audit(
+        root, "srv", 3,
+        mea.Filters(group_by="version", unknown="only", fingerprint="fp-1"),
+    )
+    assert res["coverage"].total_calls == 1  # fp-2's call is filtered out
+    assert set(res["codes"]) == {"fp_code"}
+    assert res["coverage"].attributed_calls == 0  # none of them stamp a version
+
+
+def test_impossible_and_inverted_dates_are_rejected():
+    """A shape check is not a date check. `2026-02-31` matches YYYY-MM-DD and does not
+    exist; an inverted window can never select anything. Both used to sail through and
+    return zero rows, which reads exactly like an honest "your corpus has none"."""
+    with pytest.raises(SystemExit):
+        mea.parse_argv(["--args", "codex --since 2026-02-31"])
+    with pytest.raises(SystemExit):
+        mea.parse_argv(["--args", "codex --until 2026-13-01"])
+    with pytest.raises(SystemExit):
+        mea.parse_argv(["--args", "codex --since 2026-12-01 --until 2026-01-01"])
+
+    # POSITIVE CONTROL: real dates, and an equal-bounds window (a single day), still pass.
+    args = mea.parse_argv(["--args", "codex --since 2026-02-28 --until 2026-02-28"])
+    assert args.since == "2026-02-28" and args.until == "2026-02-28"
+    mea.parse_argv(["--args", "codex --since 2024-02-29"])  # a real leap day
 
 
 def test_fingerprint_validation_allows_slashes_server_does_not():
@@ -1358,3 +1429,106 @@ def test_filter_excludes_everything_message_names_the_filter(tmp_path):
     assert "No MCP tool calls matched" not in text
     assert "matched 2 calls for this server, but 0 after scoping to" in text
     assert "server-version 9.9.9" in text
+
+
+def test_error_dates_come_from_the_result_not_the_call(tmp_path):
+    """first_seen/last_seen/samples are OCCURRENCE facts: they date when the error came
+    back, not when the call was issued.
+
+    The version-scoping refactor moved every call onto a single CallRecord.ts captured
+    from the `tool_use` record, and these fields silently followed it. For a call that
+    starts at 23:59 and fails at 00:01 the next day, that reports the error on the wrong
+    DAY — and `--since`/`--until` legitimately need the call's start time (filtering the
+    two records apart would split the pair), so one timestamp cannot serve both.
+
+    The corpus below is built so the two timestamps disagree on the calendar date, which
+    is the only way this test can fail loudly rather than by a few seconds.
+    """
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T23:59:00Z"),
+            tool_result("t1", _versioned_error("boom", "1.0.0"), "2026-07-02T00:01:00Z", True),
+        ],
+    )
+    stat = mea.audit(root, "srv", 3)["codes"]["boom"]
+    assert stat.first_seen == "2026-07-02T00:01:00Z"  # result, not the 07-01 call
+    assert stat.last_seen == "2026-07-02T00:01:00Z"
+    assert [s["ts"] for s in stat.samples] == ["2026-07-02T00:01:00Z"]
+
+    # The date FILTER still reads the call's start time — the pair must not be split.
+    span = mea.audit(root, "srv", 3, mea.Filters(since="2026-07-01", until="2026-07-01"))
+    assert span["coverage"].total_calls == 1
+    assert span["coverage"].excluded_missing_timestamp == 0
+
+
+def test_matrix_stays_aligned_when_a_cell_is_wider_than_its_label(tmp_path):
+    """Column width was sized from the scope LABEL alone. A cell wider than that width
+    expands past the format spec, so that row runs longer than the header and the table
+    stops lining up. Width must follow the widest thing actually printed.
+
+    Reproduced with call counts that need more columns than the label "1.0.0" (5 chars)
+    or MIN_SCOPE_COL (6) provide.
+    """
+    cov = mea.Coverage(total_calls=2_000_000, attributed_calls=2_000_000)
+    cov.calls_by_scope.update({"1.0.0": 1_500_000, "2.0.0": 500_000})
+    stat = mea.CodeStat(count=1_234_567)
+    stat.by_scope.update({"1.0.0": 1_234_567})
+    stat.tools.update({"go": 1_234_567})
+    result = {
+        "server": "srv",
+        "matched_servers": ["srv"],
+        "files_scanned": 1,
+        "sessions_scanned": 1,
+        "servers": {"srv": mea.ServerStat(calls=2_000_000, errors=1_234_567)},
+        "audit_sessions": {"s1"},
+        "total_calls": collections.Counter({"go": 2_000_000}),
+        "total_errors": collections.Counter({"go": 1_234_567}),
+        "codes": {"boom": stat},
+        "coverage": cov,
+        "filters": mea.Filters(),
+        "raw_matched_calls": 2_000_000,
+    }
+    lines = mea.to_text(result).splitlines()
+    start = lines.index(next(ln for ln in lines if ln.startswith("code ")))
+    matrix = lines[start:start + 5]  # header, boom row, rule, calls row, err% row
+    assert len({len(ln) for ln in matrix}) == 1, (
+        "matrix rows differ in width:\n" + "\n".join(f"{len(ln):>3} |{ln}|" for ln in matrix)
+    )
+
+    # NEGATIVE CONTROL: the assertion above can fail. Sizing off the label alone (the old
+    # behavior) leaves the count cell wider than its column, which is what it must catch.
+    old_width = max(mea.MIN_SCOPE_COL, len("1.0.0"))
+    assert len(str(1_234_567)) > old_width
+
+
+def test_json_carries_the_filters_that_defined_its_population(tmp_path):
+    """Every count in the JSON is scoped by the active filters, so the filters have to
+    ship with it. `date_scoped: true` alone loses the window; a version/fingerprint/
+    unknown scope was unreconstructable from the serialized report entirely. A scoped
+    statistic whose scope is not stated is the same failure as an unnamed denominator.
+    """
+    root = str(tmp_path)
+    _two_version_corpus(root)
+    filters = mea.Filters(
+        server_version="1.0.0", since="2026-07-01", until="2026-07-05", unknown="exclude"
+    )
+    data = json.loads(mea.to_json(mea.audit(root, "srv", 3, filters)))
+    assert data["coverage"]["active_filters"] == {
+        "server_version": "1.0.0",
+        "fingerprint": None,
+        "since": "2026-07-01",
+        "until": "2026-07-05",
+        "unknown": "exclude",
+    }
+
+    # An unscoped run says so explicitly rather than omitting the key.
+    plain = json.loads(mea.to_json(mea.audit(root, "srv", 3)))
+    assert plain["coverage"]["active_filters"] == {
+        "server_version": None,
+        "fingerprint": None,
+        "since": None,
+        "until": None,
+        "unknown": "include",
+    }

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import datetime
 import json
 import os
 import re
@@ -299,8 +300,16 @@ class CallRecord:
     server: str
     tool: str
     session: str
+    # The CALL's start time. Used ONLY for --since/--until: filtering the tool_use and
+    # tool_result records independently would split a pair and manufacture phantom
+    # no_result calls. It is NOT the error's occurrence time — see result_ts.
     ts: str | None
     input: str
+    # The paired RESULT's time: when the error actually landed. first_seen/last_seen,
+    # `repair`/`retryable` recency, and the sample dates are all occurrence facts and
+    # must read this, not ts. None until the call is paired (and for calls never
+    # answered, which carry no outcome to date anyway).
+    result_ts: str | None = None
     text: str = ""
     version: str | None = None
     fingerprint: str | None = None
@@ -369,6 +378,7 @@ def records_for_file(path: str, root: str) -> list[CallRecord]:
                 continue
             text = result_text(item)
             obj = parse_envelope(text)
+            call.result_ts = record_ts(rec)
             call.text = text
             call.is_error = is_error_result(item, obj)
             if call.is_error:
@@ -620,12 +630,15 @@ def aggregate(
         stat.sessions.add((scope, rec.session))
         stat.by_scope[scope] += 1
         stat.tools[rec.tool] += 1
-        if stat.see(rec.ts):
+        # Occurrence time is the RESULT's, never the call's start: an error happened when
+        # it came back. Only --since/--until reads rec.ts, and only to keep a call and its
+        # result on the same side of the window.
+        if stat.see(rec.result_ts):
             if rec.retryable is not None:
                 stat.retryable = rec.retryable
             if rec.repair:
                 stat.repair = rec.repair
-        stat.add_sample(rec.ts, rec.input, rec.text, samples)
+        stat.add_sample(rec.result_ts, rec.input, rec.text, samples)
         pending[(rec.tool, scope)].append(rec.code)
 
 
@@ -702,12 +715,16 @@ _NUMERIC_RUN = re.compile(r"(\d+)")
 def natural_sort_key(s: str) -> list[tuple[int, object]]:
     """Split `s` into text/number chunks so numeric runs compare BY VALUE.
 
-    A plain string sort puts "0.10.0" before "0.9.0" and "schema-10" before
-    "schema-2" — wrong for both version numbers and fingerprint schema ids, whose
-    whole point is to read as a trajectory toward the newest release. Each chunk is
-    tagged (0, str) or (1, int) so chunks of different types never get compared
+    A plain string sort puts "0.10.0" before "0.9.0" and "schema-10" before "schema-2",
+    which makes both version numbers and fingerprint schema ids hard to scan. Each chunk
+    is tagged (0, str) or (1, int) so chunks of different types never get compared
     directly against each other (which would raise); only same-position, same-type
     chunks are ever compared, and the tag alone breaks ties across types.
+
+    This is READABILITY, NOT CHRONOLOGY. It is not semver-aware: "1.0.0" sorts before
+    "1.0.0-rc1" (the prerelease lands to the RIGHT of the release it preceded), and a
+    mixed "v2.0.0"/"2.0.0" corpus orders by chunk type, not by release. Do not read
+    column order as a release timeline.
     """
     chunks = [c for c in _NUMERIC_RUN.split(s) if c != ""]
     return [(1, int(c)) if c.isdigit() else (0, c) for c in chunks]
@@ -719,9 +736,10 @@ def matrix_scopes(result) -> list[str]:
     A release whose calls all succeeded has no error rows, but it still gets a column
     (all zeros, over a real call denominator). The error scopes are unioned in purely
     defensively; they are a subset of the call scopes by construction. UNKNOWN sorts
-    last; the rest sort in natural (numeric-aware) order so observed releases read
-    left-to-right toward the newest one — "0.9.0" before "0.10.0", "schema-3" before
-    "schema-10" — instead of a lexicographic sort that would put them backwards.
+    last; the rest sort in natural (numeric-aware) order, so labels like "0.9.0"/"0.10.0"
+    and "schema-3"/"schema-10" are easier to scan than under a lexicographic sort. That
+    order does NOT establish release chronology — see natural_sort_key: prereleases and
+    mixed version prefixes land wherever the chunk comparison puts them.
     """
     scopes = set(result["coverage"].calls_by_scope) | {
         sc for stat in result["codes"].values() for sc in stat.by_scope
@@ -818,6 +836,19 @@ def to_json(result) -> str:
                 "partial": result["coverage"].partial(),
                 "group_by": result["filters"].group_by,
                 "date_scoped": result["filters"].date_scoped(),
+                # Every number above is scoped by these. Serialize them, or a consumer
+                # holding the JSON cannot tell WHICH population it is looking at:
+                # `date_scoped: true` alone loses the window, and a combined
+                # version/fingerprint/unknown scope is unreconstructable. A scoped
+                # statistic whose scope is not stated is the same failure as a
+                # denominator that is not named.
+                "active_filters": {
+                    "server_version": result["filters"].server_version,
+                    "fingerprint": result["filters"].fingerprint,
+                    "since": result["filters"].since,
+                    "until": result["filters"].until,
+                    "unknown": result["filters"].unknown,
+                },
                 # Per-scope CALL denominators and their matching numerators. A consumer
                 # can compute any per-scope rate without ever reaching for a global count.
                 "calls_by_scope": dict(result["coverage"].calls_by_scope),
@@ -940,11 +971,22 @@ def to_text(result) -> str:
 
     scopes = matrix_scopes(result)
     if scopes:
-        # Column width follows the widest scope label (version strings are short;
-        # fingerprints like "codex-in-claude/0.1/schema-38" are not) so headers and
-        # data stay aligned instead of running together. MIN_SCOPE_COL keeps narrow
-        # counts from crowding a short label like "1.0.0".
-        col_width = max(MIN_SCOPE_COL, max(len(sc) for sc in scopes))
+        # Width follows the widest thing that will actually be PRINTED in the column, not
+        # just the scope label (version strings are short; fingerprints like
+        # "codex-in-claude/0.1/schema-38" are not). A cell wider than col_width silently
+        # expands past the format spec and knocks that one row out of alignment with the
+        # header — so the counts and rates have to be measured too, not assumed narrower.
+        # MIN_SCOPE_COL keeps narrow counts from crowding a short label like "1.0.0".
+        cells = [
+            str(s.by_scope.get(sc, 0)) for _c, s in sorted_codes(result) for sc in scopes
+        ]
+        cells += [str(cov.calls_by_scope.get(sc, 0)) for sc in scopes]
+        cells += [scope_rate(result, sc) for sc in scopes]
+        col_width = max(
+            MIN_SCOPE_COL,
+            max(len(sc) for sc in scopes),
+            max((len(c) for c in cells), default=0),
+        )
         out.append(f"\n## Errors by code × {dim}")
         header = f"{'code':<34}" + "".join(f" {sc:>{col_width}}" for sc in scopes)
         out.append(header)
@@ -1085,20 +1127,41 @@ def parse_argv(argv) -> argparse.Namespace:
         parser.error(f"invalid --server-version {args.server_version!r}")
     if args.fingerprint and not VALID_FINGERPRINT.match(args.fingerprint):
         parser.error(f"invalid --fingerprint {args.fingerprint!r}")
+    # Shape alone is not enough: `2026-02-31` matches the regex and is not a date. Parse
+    # a real calendar date, and reject an inverted window — both otherwise sail through
+    # and return zero rows that read exactly like an honest "your corpus has none".
+    parsed_dates: dict[str, datetime.date] = {}
     for flag, value in (("--since", args.since), ("--until", args.until)):
-        if value and not VALID_DATE.match(value):
+        if not value:
+            continue
+        if not VALID_DATE.match(value):
             parser.error(f"invalid {flag} {value!r}: expected YYYY-MM-DD")
-    if args.unknown == "only" and (args.server_version or args.fingerprint):
-        # An unattributed record has no version/fingerprint to compare, so it can
-        # never equal a specific observed value. --unknown only combined with
-        # --server-version or --fingerprint is vacuous by construction: the result
-        # is always empty, regardless of corpus. Reject rather than silently
-        # report zero results, which reads as "your corpus has none".
+        try:
+            parsed_dates[flag] = datetime.date.fromisoformat(value)
+        except ValueError:
+            parser.error(f"invalid {flag} {value!r}: not a real calendar date")
+    if parsed_dates.get("--since", datetime.date.min) > parsed_dates.get(
+        "--until", datetime.date.max
+    ):
         parser.error(
-            "--unknown only combined with --server-version/--fingerprint always "
-            "yields zero results: an unattributed record can never match a "
-            "specific observed value. Drop --unknown only, or drop the version/"
-            "fingerprint filter."
+            f"--since {args.since} is after --until {args.until}: an inverted window "
+            "always yields zero results. Swap them."
+        )
+
+    # --unknown is defined against the ACTIVE dimension (Filters.selects and Coverage both
+    # ask "does this call carry a value for group_by?"), so only a filter on THAT dimension
+    # is vacuous with `only`. The other dimension's filter is a legitimate, non-empty query:
+    #   --group-by version --unknown only --fingerprint fp-1
+    #     → "calls from fingerprint fp-1 that stamp no version" — exactly the corpus today.
+    # Rejecting it too, as this check first did, refused a question the report can answer.
+    identity_filter = (
+        args.server_version if args.group_by == "version" else args.fingerprint
+    )
+    if args.unknown == "only" and identity_filter:
+        parser.error(
+            f"--unknown only combined with a {args.group_by} filter always yields zero "
+            f"results: an unattributed record can never match a specific {args.group_by}. "
+            f"Drop --unknown only, or drop the {args.group_by} filter."
         )
     return args
 
