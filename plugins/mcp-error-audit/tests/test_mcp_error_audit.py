@@ -673,11 +673,29 @@ def test_rate_uses_attributed_calls_and_flags_partial(tmp_path):
 def test_matrix_shows_code_by_version(tmp_path):
     root = str(tmp_path)
     _two_version_corpus(root)
-    data = json.loads(mea.to_json(mea.audit(root, "srv", 3)))
+    result = mea.audit(root, "srv", 3)
+    data = json.loads(mea.to_json(result))
     assert data["by_code"]["old_code"]["by_scope"] == {"1.0.0": 1}
     assert data["by_code"]["new_code"]["by_scope"] == {"2.0.0": 1}
-    text = mea.to_text(mea.audit(root, "srv", 3))
-    assert "1.0.0" in text and "2.0.0" in text
+
+    text = mea.to_text(result)
+    # Structure unique to the matrix: its section header must be present.
+    assert "## Errors by code × version" in text
+    lines = text.splitlines()
+    header_idx = lines.index("## Errors by code × version")
+    header_row = lines[header_idx + 1]
+    # Header row carries exactly the two scope labels, in order (tokenized by
+    # whitespace: if columns ran together, this would collapse to one merged
+    # token instead of two).
+    assert header_row.split() == ["code", "1.0.0", "2.0.0"]
+
+    old_code_row = next(ln for ln in lines[header_idx + 2 :] if ln.startswith("old_code"))
+    # old_code was only observed at 1.0.0 — its 2.0.0 column must show the
+    # NOT-OBSERVED zero, not be missing or blank.
+    assert old_code_row.split() == ["old_code", "1", "0"]
+
+    new_code_row = next(ln for ln in lines[header_idx + 2 :] if ln.startswith("new_code"))
+    assert new_code_row.split() == ["new_code", "0", "1"]
 
 
 def test_text_report_says_not_observed_never_fixed(tmp_path):
@@ -685,6 +703,53 @@ def test_text_report_says_not_observed_never_fixed(tmp_path):
     _two_version_corpus(root)
     text = mea.to_text(mea.audit(root, "srv", 3, mea.Filters(server_version="2.0.0")))
     assert "fixed" not in text.lower()
+    # The NOT-OBSERVED caveat itself must be present, not merely absent of "fixed".
+    assert "NOT OBSERVED" in text
+    assert "not a fix" in text
+
+
+def test_matrix_aligns_columns_for_long_fingerprint_labels(tmp_path):
+    """Finding: at fixed width-14 columns, a fingerprint label like
+    'codex-in-claude/0.1/schema-38' (30 chars) overruns its column and runs
+    into the next header/value, breaking alignment. The matrix must size
+    columns to their content instead.
+    """
+    root = str(tmp_path)
+    fp1 = "codex-in-claude/0.1/schema-38"
+    fp2 = "codex-in-claude/2.0/schema-99"
+
+    def fp_error(code, fp):
+        return json.dumps(
+            {
+                "ok": False,
+                "error": {"code": code, "message": "boom", "retryable": False},
+                "meta": {"fingerprint": fp},
+            }
+        )
+
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", fp_error("old_code", fp1), "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-02T00:00:00Z"),
+            tool_result("t2", fp_error("old_code", fp2), "2026-07-02T00:00:01Z", True),
+        ],
+    )
+    result = mea.audit(root, "srv", 3, mea.Filters(group_by="fingerprint"))
+    text = mea.to_text(result)
+
+    assert "## Errors by code × fingerprint" in text
+    lines = text.splitlines()
+    header_idx = lines.index("## Errors by code × fingerprint")
+    header_row = lines[header_idx + 1]
+    data_row = next(ln for ln in lines[header_idx + 2 :] if ln.startswith("old_code"))
+
+    # If the columns ran together (the bug), the two fingerprint labels would
+    # merge into a single whitespace token instead of tokenizing separately —
+    # same for the data row's counts.
+    assert header_row.split() == ["code", fp1, fp2]
+    assert data_row.split() == ["old_code", "1", "1"]
 
 
 def test_discovery_output_is_unchanged_by_version_work(tmp_path):

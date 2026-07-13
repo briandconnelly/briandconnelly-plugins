@@ -84,6 +84,10 @@ def extract_fingerprint(obj) -> str | None:
 # rate is noise, not signal.
 MIN_CALLS_FOR_RATE = 5
 
+# Floor for the code×scope matrix's per-scope column width, so short version
+# labels ("1.0.0") don't crowd their counts.
+MIN_SCOPE_COL = 6
+
 
 def server_sort_key(kv):
     """Discovery ranking: error rate desc, low-volume servers last."""
@@ -756,11 +760,18 @@ def to_text(result) -> str:
 
     scopes = sorted({sc for s in result["codes"].values() for sc in s.by_scope})
     if scopes:
+        # Column width follows the widest scope label (version strings are short;
+        # fingerprints like "codex-in-claude/0.1/schema-38" are not) so headers and
+        # data stay aligned instead of running together. MIN_SCOPE_COL keeps narrow
+        # counts from crowding a short label like "1.0.0".
+        col_width = max(MIN_SCOPE_COL, max(len(sc) for sc in scopes))
         out.append(f"\n## Errors by code × {dim}")
-        header = f"{'code':<34}" + "".join(f"{sc:>14}" for sc in scopes)
+        header = f"{'code':<34}" + "".join(f" {sc:>{col_width}}" for sc in scopes)
         out.append(header)
         for code, s in sorted_codes(result):
-            row = f"{code:<34}" + "".join(f"{s.by_scope.get(sc, 0):>14}" for sc in scopes)
+            row = f"{code:<34}" + "".join(
+                f" {s.by_scope.get(sc, 0):>{col_width}}" for sc in scopes
+            )
             out.append(row)
         out.append(
             "\nA zero above means NOT OBSERVED in that "
