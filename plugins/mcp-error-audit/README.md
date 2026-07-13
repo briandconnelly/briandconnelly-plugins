@@ -22,15 +22,18 @@ Scope an audit to a release:
 
 Never a statistic whose denominator is a guess.
 
-- The **header** rate is `errors ÷ all matched calls`, attributed or not, and says so.
-  It belongs to no single release.
+- The **header** rate's denominator is whichever calls are currently in scope, and its label names that set.
+  Unscoped, that is every matched call, attributed or not.
+  Scoped (`--server-version`, `--fingerprint`, `--since`/`--until`, `--unknown`), it is only the calls that scope selected — never "all matched calls".
 - The **matrix** prints one column per release (or fingerprint) *observed in the calls* — so a
   release you are running that has produced no errors yet still appears, with a zero row over a
   real call count. Each column carries its own `calls` denominator and an `err%` over it; no
   release's rate borrows another's calls.
 - Calls whose release cannot be read from their own result land in an `unknown` column with a
-  reason (`no_result`, `unparseable_result`, `not_emitted`, `missing_timestamp`), and the report
+  reason (`no_result`, `unparseable_result`, `not_emitted`), and the report
   is flagged **PARTIAL**. They never inflate a release's denominator.
+- An undated call excluded by `--since`/`--until` is a different case: it may carry a perfectly good version, so it is not filed as unattributed.
+  It is excluded from the report entirely, like any other scope exclusion, and counted separately so it never vanishes silently.
 
 A zero in the matrix means **not observed in that release over that column's calls** — not
 "fixed". This tool reads transcripts; it cannot see a code change.
