@@ -237,6 +237,8 @@ class CodeStat:
 
     def add_sample(self, ts: str | None, input_snippet: str, text: str, limit: int):
         """Keep the `limit` most recent samples (recent evidence beats stale)."""
+        if limit <= 0:
+            return
         entry = {
             "ts": ts,
             "input": input_snippet,

@@ -95,14 +95,15 @@ def build_discovery_fixture(tmp_path):
     root = str(tmp_path)
     records = []
     for i in range(100):
+        minute = f"{i // 60:02d}:{i % 60:02d}"
         records.append(
-            tool_use(f"n{i}", "mcp__noisy__go", {}, f"2026-07-01T00:{i:02d}:00Z")
+            tool_use(f"n{i}", "mcp__noisy__go", {}, f"2026-07-01T{minute}:00Z")
         )
         records.append(
             tool_result(
                 f"n{i}",
                 envelope("e") if i < 2 else "ok",
-                f"2026-07-01T00:{i:02d}:01Z",
+                f"2026-07-01T{minute}:01Z",
                 is_error=i < 2,
             )
         )
@@ -217,6 +218,15 @@ def test_json_samples_are_structured(tmp_path):
     data = json.loads(mea.to_json(mea.audit(root, "srv", 3)))
     sample = data["by_code"]["not_found"]["samples"][0]
     assert set(sample) == {"ts", "input", "text"}
+
+
+def test_samples_zero_is_a_noop(tmp_path):
+    # --samples 0 must disable sample collection, not crash (regression).
+    root = build_audit_fixture(tmp_path)
+    result = mea.audit(root, "srv", 0)
+    stat = result["codes"]["not_found"]
+    assert stat.count == 5
+    assert stat.samples == []
 
 
 # --- distinct-server merge warning -----------------------------------------
