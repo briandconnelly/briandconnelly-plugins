@@ -522,3 +522,99 @@ def test_multi_version_folded_session_attributes_each_call(tmp_path):
     assert len(result["audit_sessions"]) == 1
     assert stat.session_count() == 1
     assert stat.sessions == {("1.0.0", "proj/abc"), ("2.0.0", "proj/abc")}
+
+
+# --- filters ----------------------------------------------------------------
+
+
+def _two_version_corpus(root):
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", _versioned_error("old_code", "1.0.0"), "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-10T00:00:00Z"),
+            tool_result("t2", _versioned_error("new_code", "2.0.0"), "2026-07-10T00:00:01Z", True),
+        ],
+    )
+
+
+def test_filter_by_server_version(tmp_path):
+    root = str(tmp_path)
+    _two_version_corpus(root)
+    result = mea.audit(root, "srv", 3, mea.Filters(server_version="2.0.0"))
+    assert set(result["codes"]) == {"new_code"}
+    # POSITIVE CONTROL: the same filter must be able to surface the other version.
+    # A filter that matches nothing and a filter that is broken look identical.
+    other = mea.audit(root, "srv", 3, mea.Filters(server_version="1.0.0"))
+    assert set(other["codes"]) == {"old_code"}
+
+
+def test_filter_by_fingerprint(tmp_path):
+    root = str(tmp_path)
+    body = json.dumps(
+        {"ok": False, "error": {"code": "fp_code", "message": "b", "retryable": False},
+         "meta": {"fingerprint": "srv/0.1/schema-38"}}
+    )
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", body, "2026-07-01T00:00:01Z", True),
+        ],
+    )
+    hit = mea.audit(root, "srv", 3, mea.Filters(fingerprint="srv/0.1/schema-38"))
+    assert set(hit["codes"]) == {"fp_code"}
+    miss = mea.audit(root, "srv", 3, mea.Filters(fingerprint="srv/0.1/schema-1"))
+    assert set(miss["codes"]) == set()
+
+
+def test_date_filter_uses_the_call_timestamp_not_the_result(tmp_path):
+    """A call that STARTS inside the window is counted and classified even when its
+    result lands outside it. Filtering the two records independently would drop the
+    tool_use while keeping its result (or vice versa) and manufacture phantom
+    `no_result` calls — corrupting the denominator."""
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            # starts inside the window, answers after it
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-05T23:59:00Z"),
+            tool_result("t1", _versioned_error("inside", "1.0.0"), "2026-07-06T00:30:00Z", True),
+            # starts outside the window, answers inside it
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-04T00:00:00Z"),
+            tool_result("t2", _versioned_error("outside", "1.0.0"), "2026-07-05T00:00:00Z", True),
+        ],
+    )
+    result = mea.audit(root, "srv", 3, mea.Filters(since="2026-07-05", until="2026-07-05"))
+    assert set(result["codes"]) == {"inside"}
+
+
+def test_date_filter_excludes_undated_calls_as_missing_timestamp(tmp_path):
+    root = str(tmp_path)
+    rec_use = tool_use("t1", "mcp__srv__go", {}, "2026-07-05T00:00:00Z")
+    del rec_use["timestamp"]  # an undated call cannot be placed in a window
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [rec_use, tool_result("t1", _versioned_error("c", "1.0.0"), "2026-07-05T00:00:01Z", True)],
+    )
+    result = mea.audit(root, "srv", 3, mea.Filters(since="2026-07-05"))
+    assert set(result["codes"]) == set()
+    assert result["coverage"].unknown["missing_timestamp"] == 1
+
+
+def test_unknown_only_and_exclude(tmp_path):
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", _versioned_error("known", "1.0.0"), "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:02:00Z"),
+            tool_result("t2", "Connection closed", "2026-07-01T00:02:01Z", True),
+        ],
+    )
+    only = mea.audit(root, "srv", 3, mea.Filters(unknown="only"))
+    assert set(only["codes"]) == {"transport_connection_closed"}
+    excl = mea.audit(root, "srv", 3, mea.Filters(unknown="exclude"))
+    assert set(excl["codes"]) == {"known"}

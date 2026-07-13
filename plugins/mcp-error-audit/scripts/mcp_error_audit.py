@@ -449,14 +449,40 @@ class Coverage:
 
 @dataclass
 class Filters:
+    """Scope selection. `server_version` and `fingerprint` are OBSERVED facts read from
+    the envelope. `since`/`until` are an APPROXIMATION — a date is a proxy for a release
+    and breaks when the user upgrades late or runs a dev tree between releases."""
+
     server_version: str | None = None
     fingerprint: str | None = None
     since: str | None = None
     until: str | None = None
-    group_by: str = "version"
-    unknown: str = "include"
+    group_by: str = "version"  # version | fingerprint
+    unknown: str = "include"  # include | exclude | only
+
+    def date_scoped(self) -> bool:
+        return bool(self.since or self.until)
 
     def selects(self, rec: CallRecord, coverage: Coverage) -> bool:
+        if self.unknown == "exclude" and rec.unknown_reason:
+            return False
+        if self.unknown == "only" and not rec.unknown_reason:
+            return False
+        if self.server_version and rec.version != self.server_version:
+            return False
+        if self.fingerprint and rec.fingerprint != self.fingerprint:
+            return False
+        if self.date_scoped():
+            # The CALL's start time, never the result's: filtering the two records
+            # independently would split a pair and manufacture phantom no_result calls.
+            if not rec.ts:
+                coverage.unknown["missing_timestamp"] += 1
+                return False
+            day = rec.ts[:10]
+            if self.since and day < self.since:
+                return False
+            if self.until and day > self.until:
+                return False
         return True
 
 
