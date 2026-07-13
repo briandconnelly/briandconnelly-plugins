@@ -718,6 +718,9 @@ def test_date_filter_excludes_undated_calls_without_filing_it_as_unattributed(tm
     text = mea.to_text(result)
     assert "PARTIAL" not in text
     assert "1 calls with no timestamp" in text
+    # Verify the JSON output carries the excluded_missing_timestamp key.
+    data = json.loads(mea.to_json(result))
+    assert data["coverage"]["excluded_missing_timestamp"] == 1
 
 
 def _fingerprint_only_corpus(root):
@@ -955,6 +958,8 @@ def test_header_rate_label_matches_denominator_under_unknown_only(tmp_path):
     header = next(ln for ln in text.splitlines() if ln.startswith("scanned "))
     assert "3 calls · 1 errors (33.3% of calls scoped to unknown=only)" in header
     assert "all matched calls" not in header
+    # Pin the PARTIAL note's closing sentence: it must name the scoped denominator.
+    assert "header spans calls scoped to unknown=only." in text
 
 
 def test_header_rate_label_matches_denominator_under_date_scope(tmp_path):
@@ -1228,7 +1233,7 @@ def test_natural_sort_key_helper():
     # No crash comparing a purely numeric scope against a purely textual one — chunks
     # are tagged (text, number) so cross-type chunks are never compared directly.
     # (matrix_scopes(), not this helper, is what pins UNKNOWN to sort last.)
-    assert sorted(["10", "2"], key=mea.natural_sort_key) == ["2", "10"]
+    assert sorted(["v2.0", "1.0.0"], key=mea.natural_sort_key) == ["v2.0", "1.0.0"]
 
 
 # --- CLI / slash-command argument passing -----------------------------------
