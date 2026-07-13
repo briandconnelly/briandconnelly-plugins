@@ -647,6 +647,55 @@ def test_unknown_only_and_exclude(tmp_path):
 # --- coverage and the matrix ------------------------------------------------
 
 
+def test_coverage_attribution_is_dimension_aware(tmp_path):
+    """Coverage attribution must be relative to the ACTIVE group_by dimension.
+
+    A call whose envelope carries only a fingerprint (no server_version) is a
+    perfectly well-formed result — but it is NOT attributed under
+    group_by='version', even though rec.unknown_reason is None (an envelope was
+    present). Regression for: the text report claimed calls were "attributed to
+    a version" while the by-version matrix showed every one of them at scope
+    'unknown' — an outright contradiction. Real-corpus shape: servers that only
+    ever emit a fingerprint, never a server_version.
+    """
+    root = str(tmp_path)
+    fp_only = json.dumps(
+        {
+            "ok": False,
+            "error": {"code": "fp_code", "message": "b", "retryable": False},
+            "meta": {"fingerprint": "srv/0.1/schema-38"},
+        }
+    )
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", fp_only, "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+            tool_result("t2", fp_only, "2026-07-01T00:01:01Z", True),
+        ],
+    )
+
+    by_version = mea.audit(root, "srv", 3, mea.Filters(group_by="version"))
+    cov_v = by_version["coverage"]
+    assert cov_v.attributed_calls == 0
+    assert cov_v.unknown == {"not_emitted": 2}
+    assert cov_v.total_calls == cov_v.attributed_calls + sum(cov_v.unknown.values())
+    # The matrix must AGREE with coverage: every call's version-scope is unknown.
+    assert sorted({sc for s in by_version["codes"].values() for sc in s.by_scope}) == [
+        "unknown"
+    ]
+
+    by_fp = mea.audit(root, "srv", 3, mea.Filters(group_by="fingerprint"))
+    cov_fp = by_fp["coverage"]
+    assert cov_fp.attributed_calls == 2
+    assert cov_fp.unknown == {}
+    assert cov_fp.total_calls == cov_fp.attributed_calls + sum(cov_fp.unknown.values())
+    assert sorted(
+        {sc for s in by_fp["codes"].values() for sc in s.by_scope}
+    ) == ["srv/0.1/schema-38"]
+
+
 def test_rate_uses_attributed_calls_and_flags_partial(tmp_path):
     root = str(tmp_path)
     write_jsonl(
@@ -801,3 +850,49 @@ def test_discovery_output_is_unchanged_by_version_work(tmp_path):
     assert data["servers"]["srv"]["errors"] == 2
     assert data["servers"]["srv"]["error_rate"] == 1.0
     assert "coverage" not in data
+
+
+# --- "no calls matched" message must distinguish its two causes -------------
+
+
+def test_no_such_server_message_unchanged(tmp_path):
+    """Genuinely no such server: the original, unqualified message."""
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", _versioned_error("boom", "1.0.0"), "2026-07-01T00:00:01Z", True),
+        ],
+    )
+    result = mea.audit(root, "nosuchserver", 3)
+    text = mea.to_text(result)
+    assert (
+        "No MCP tool calls matched. Run without --server to list "
+        "the servers seen in transcripts." in text
+    )
+
+
+def test_filter_excludes_everything_message_names_the_filter(tmp_path):
+    """The server matched calls; a scope filter excluded all of them. The message
+    must say so and name the filter — NOT imply the server name was wrong.
+
+    Regression for: `--server-version 0.10.0` on a corpus with no versions at all
+    printed the exact same "no such server" message as a genuinely bad server name,
+    sending the user to fix the wrong thing.
+    """
+    root = str(tmp_path)
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [
+            tool_use("t1", "mcp__srv__go", {}, "2026-07-01T00:00:00Z"),
+            tool_result("t1", _versioned_error("boom", "1.0.0"), "2026-07-01T00:00:01Z", True),
+            tool_use("t2", "mcp__srv__go", {}, "2026-07-01T00:01:00Z"),
+            tool_result("t2", _versioned_error("boom", "1.0.0"), "2026-07-01T00:01:01Z", True),
+        ],
+    )
+    result = mea.audit(root, "srv", 3, mea.Filters(server_version="9.9.9"))
+    text = mea.to_text(result)
+    assert "No MCP tool calls matched" not in text
+    assert "matched 2 calls for this server, but 0 after scoping to" in text
+    assert "server-version 9.9.9" in text

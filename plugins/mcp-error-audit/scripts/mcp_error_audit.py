@@ -453,6 +453,13 @@ class ServerStat:
 
 @dataclass
 class Coverage:
+    """Attribution is relative to the ACTIVE `Filters.group_by` dimension: a call
+    that carries a fingerprint but no server_version is unattributed when grouping
+    by version, even though it has a perfectly well-formed envelope — and vice
+    versa. This is deliberately NOT the same thing as `CallRecord.unknown_reason`,
+    which asks only "was there a usable envelope at all," independent of which
+    dimension the report is currently keyed by."""
+
     total_calls: int = 0
     attributed_calls: int = 0
     unknown: collections.Counter = field(default_factory=collections.Counter)
@@ -477,6 +484,24 @@ class Filters:
 
     def date_scoped(self) -> bool:
         return bool(self.since or self.until)
+
+    def describe_active(self) -> str:
+        """Human-readable list of the scope filters currently narrowing results.
+
+        Empty when every filter is at its default (nothing is being scoped).
+        """
+        parts = []
+        if self.server_version:
+            parts.append(f"server-version {self.server_version}")
+        if self.fingerprint:
+            parts.append(f"fingerprint {self.fingerprint}")
+        if self.since:
+            parts.append(f"since {self.since}")
+        if self.until:
+            parts.append(f"until {self.until}")
+        if self.unknown != "include":
+            parts.append(f"unknown={self.unknown}")
+        return ", ".join(parts)
 
     def selects(self, rec: CallRecord, coverage: Coverage) -> bool:
         if self.unknown == "exclude" and rec.unknown_reason:
@@ -527,10 +552,17 @@ def aggregate(
         total_calls[rec.tool] += 1
         audit_sessions.add(rec.session)
         coverage.total_calls += 1
-        if rec.unknown_reason:
-            coverage.unknown[rec.unknown_reason] += 1
-        else:
+        # Attribution is judged against filters.group_by, the ACTIVE dimension — not
+        # against whether the record has ANY identity at all. A call with only a
+        # fingerprint is not attributed when the matrix and header are keyed by
+        # version. rec.unknown_reason stays dimension-independent ("was there a
+        # usable envelope at all"); when this dimension's own value is simply
+        # absent from an otherwise-fine envelope, that reason is "not_emitted"
+        # here even if rec.unknown_reason is None (some OTHER dimension was set).
+        if scope != UNKNOWN:
             coverage.attributed_calls += 1
+        else:
+            coverage.unknown[rec.unknown_reason or "not_emitted"] += 1
 
         if rec.unknown_reason == "no_result":
             continue  # never answered: nothing to classify or recover
@@ -572,6 +604,9 @@ def audit(root: str, server: str, samples: int, filters: "Filters | None" = None
     codes: dict[str, CodeStat] = collections.defaultdict(CodeStat)
     audit_sessions: set[str] = set()
     coverage = Coverage()
+    # Calls that matched the server, BEFORE filters.selects() scopes them down — lets
+    # the report tell "no such server" apart from "the filters excluded everything".
+    raw_matched_calls = 0
 
     for path in files:
         records = records_for_file(path, root)
@@ -591,6 +626,7 @@ def audit(root: str, server: str, samples: int, filters: "Filters | None" = None
             continue
 
         matched = [r for r in records if needle in r.server.lower()]
+        raw_matched_calls += len(matched)
         selected = [r for r in matched if filters.selects(r, coverage)]
         aggregate(selected, filters, samples, codes, total_calls, total_errors,
                   audit_sessions, coverage)
@@ -607,6 +643,7 @@ def audit(root: str, server: str, samples: int, filters: "Filters | None" = None
         "codes": codes,
         "coverage": coverage,
         "filters": filters,
+        "raw_matched_calls": raw_matched_calls,
     }
 
 
@@ -731,10 +768,22 @@ def to_text(result) -> str:
     n_sess = len(result["audit_sessions"])
     out.append(f"# MCP error audit — servers matching '{result['server']}'")
     if not calls:
-        out.append(
-            "\nNo MCP tool calls matched. Run without --server to list "
-            "the servers seen in transcripts."
-        )
+        raw = result.get("raw_matched_calls", 0)
+        if raw:
+            # The server matched calls; the active scope filters excluded all of
+            # them. Say so and name the filters — conflating this with "no such
+            # server" sends the user to fix the wrong thing.
+            desc = result["filters"].describe_active() or "the active filters"
+            out.append(
+                f"\nmatched {raw} calls for this server, but 0 after scoping to "
+                f"{desc}. Loosen or drop --server-version/--fingerprint/--since/"
+                "--until/--unknown to see them."
+            )
+        else:
+            out.append(
+                "\nNo MCP tool calls matched. Run without --server to list "
+                "the servers seen in transcripts."
+            )
         return "\n".join(out)
     out.append(f"matched: {', '.join(result['matched_servers'])}")
     distinct = distinct_matches(result)
