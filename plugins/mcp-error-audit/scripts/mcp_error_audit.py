@@ -309,25 +309,40 @@ def records_for_file(path: str, root: str) -> list[CallRecord]:
     """
     session = session_key(path, root)
     calls: dict[str, CallRecord] = {}
+    no_id_calls: list[CallRecord] = []
     for rec in iter_records(path):
         ts = record_ts(rec)
         for item in message_content(rec):
             if not (isinstance(item, dict) and item.get("type") == "tool_use"):
                 continue
             parsed = parse_tool_name(item.get("name") or "")
-            tid = item.get("id")
-            if not parsed or not tid:
+            if not parsed:
                 continue
             server, tool = parsed
             raw = json.dumps(item.get("input", {}), sort_keys=True, default=str)
-            calls[tid] = CallRecord(
-                input_id=tid,
-                server=server,
-                tool=tool,
-                session=session,
-                ts=ts,
-                input=" ".join(raw.split())[:120],
-            )
+            tid = item.get("id")
+            if tid:
+                calls[tid] = CallRecord(
+                    input_id=tid,
+                    server=server,
+                    tool=tool,
+                    session=session,
+                    ts=ts,
+                    input=" ".join(raw.split())[:120],
+                )
+            else:
+                # Tool use with valid name but no id: record as no_result
+                no_id_calls.append(
+                    CallRecord(
+                        input_id="",
+                        server=server,
+                        tool=tool,
+                        session=session,
+                        ts=ts,
+                        input=" ".join(raw.split())[:120],
+                        unknown_reason="no_result",
+                    )
+                )
 
     ordered: list[CallRecord] = []
     for rec in iter_records(path):
@@ -356,6 +371,9 @@ def records_for_file(path: str, root: str) -> list[CallRecord]:
     for call in calls.values():
         call.unknown_reason = "no_result"
         ordered.append(call)
+
+    # Append calls that had no id (they can never be paired with results)
+    ordered.extend(no_id_calls)
     return ordered
 
 

@@ -410,3 +410,35 @@ def test_records_are_in_result_order_with_unpaired_last(tmp_path):
     )
     recs = mea.records_for_file(os.path.join(root, "proj", "s1.jsonl"), root)
     assert [r.input_id for r in recs] == ["t2", "t1", "t3"]
+
+
+def test_tool_use_without_id_is_counted_as_no_result(tmp_path):
+    """A tool_use with valid MCP name but no id must be counted, not dropped.
+
+    This is a regression test for the fix: previously dropped calls are now counted
+    toward discovery-mode stats, recorded with unknown_reason='no_result'.
+    """
+    root = str(tmp_path)
+    # Construct a tool_use dict without the "id" key
+    tool_use_no_id = {
+        "timestamp": "2026-07-01T00:00:00Z",
+        "message": {
+            "content": [{"type": "tool_use", "name": "mcp__srv__do_thing", "input": {}}]
+        },
+    }
+    write_jsonl(
+        os.path.join(root, "proj", "s1.jsonl"),
+        [tool_use_no_id],
+    )
+
+    # Test 1: records_for_file returns a record with unknown_reason='no_result'
+    recs = mea.records_for_file(os.path.join(root, "proj", "s1.jsonl"), root)
+    assert len(recs) == 1
+    assert recs[0].server == "srv"
+    assert recs[0].tool == "do_thing"
+    assert recs[0].unknown_reason == "no_result"
+
+    # Test 2: discovery mode counts it in servers[srv].calls
+    result = mea.audit(root, "srv", 3)
+    srv_stat = result["servers"]["srv"]
+    assert srv_stat.calls == 1  # Must be counted in discovery mode
