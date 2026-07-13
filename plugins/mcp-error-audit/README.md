@@ -35,6 +35,20 @@ Never a statistic whose denominator is a guess.
 A zero in the matrix means **not observed in that release over that column's calls** — not
 "fixed". This tool reads transcripts; it cannot see a code change.
 
+## Known risk: the slash command interpolates your arguments into a shell string
+
+`commands/mcp-error-audit.md` passes `$ARGUMENTS` into a shell command as `--args '$ARGUMENTS'`.
+Arguments containing a single quote can close it and run arbitrary shell commands — e.g.
+`/mcp-error-audit x' ; echo pwned #` executes `echo pwned`.
+
+The script's quote check does **not** prevent this (bash tokenizes the string before Python
+starts, so no quote ever reaches Python), and neither does the command's `allowed-tools` entry
+(it is a prefix match, which the injected string still satisfies).
+
+This is a knowingly accepted risk, not an oversight: it predates release scoping, and the only
+caller is your own slash command, typed by you, in your own shell. Closing it properly means not
+interpolating `$ARGUMENTS` into a shell string at all. Do not paste arguments you did not write.
+
 ## How it works
 
 The command runs the bundled `scripts/mcp_error_audit.py` (Python 3, standard library only) against your session transcripts under `~/.claude/projects/`.

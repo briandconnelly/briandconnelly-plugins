@@ -996,13 +996,26 @@ def parse_argv(argv) -> argparse.Namespace:
     args = parser.parse_args(argv)
 
     if args.args_string is not None:
-        # Defense-in-depth at the PYTHON layer only: rejecting quotes here keeps a
-        # stray quote from producing a confusing shlex parse. It does NOT and cannot
-        # prevent shell injection: bash tokenizes the interpolated $ARGUMENTS before
-        # this script ever runs, so anything that breaks out of the shell quoting in
-        # commands/mcp-error-audit.md has already happened by the time we see argv.
-        # The `allowed-tools` allowlist in that command file is what guards the shell
-        # layer.
+        # KNOWN, ACCEPTED RISK — SHELL INJECTION. commands/mcp-error-audit.md interpolates
+        # $ARGUMENTS into a shell string (`--args '$ARGUMENTS'`). A payload that closes the
+        # quote runs arbitrary commands:
+        #
+        #     /mcp-error-audit x' ; echo pwned #
+        #     → python3 ... --args 'x' ; echo pwned #'      (bash runs `echo pwned`)
+        #
+        # The quote rejection BELOW DOES NOT PREVENT THIS, and cannot: bash tokenizes the
+        # string before Python starts, so Python receives argv ['--args', 'x'] — no quote
+        # ever reaches this check. It is bypassed, not defeated. Its only real job is to
+        # keep a stray quote from producing a confusing shlex parse.
+        #
+        # `allowed-tools` DOES NOT GUARD THIS EITHER: `Bash(python3 …/mcp_error_audit.py:*)`
+        # is a PREFIX match, and the injected string still begins with the allowed prefix,
+        # so it matches and runs. (An earlier version of this comment claimed the allowlist
+        # was the guard. It is not; that claim was false.)
+        #
+        # The risk predates version scoping and is knowingly accepted: the only caller is
+        # the user's own slash command, typed by the user, in the user's own shell. Actually
+        # closing it means not interpolating $ARGUMENTS into a shell string at all.
         if "'" in args.args_string or '"' in args.args_string:
             parser.error("quotes are not allowed in the command arguments")
         try:

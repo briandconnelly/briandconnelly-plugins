@@ -1111,10 +1111,15 @@ def test_args_string_bare_server_and_empty():
 
 
 def test_args_string_rejects_quotes():
-    """Defense-in-depth at the PYTHON layer only: a stray quote in --args would
-    otherwise produce a confusing shlex parse. This does NOT and cannot prevent shell
-    injection — bash tokenizes $ARGUMENTS before python ever runs; the allowed-tools
-    allowlist in commands/mcp-error-audit.md is what guards that layer."""
+    """A stray quote in --args would otherwise produce a confusing shlex parse.
+
+    This is NOT a security control. It does not prevent shell injection and cannot:
+    bash tokenizes the interpolated $ARGUMENTS in commands/mcp-error-audit.md before
+    python starts, so a payload like `x' ; echo pwned #` reaches python as argv
+    ['--args', 'x'] — no quote ever arrives at this check. `allowed-tools` does not
+    guard it either: it is a PREFIX match, which the injected string still satisfies.
+    The risk predates this branch and is knowingly accepted; see parse_argv().
+    """
     with pytest.raises(SystemExit):
         mea.parse_argv(["--args", "codex --since '2026-07-12'"])
 
