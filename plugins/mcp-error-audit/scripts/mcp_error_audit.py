@@ -32,6 +32,54 @@ from glob import glob
 
 VALID_SERVER = re.compile(r"^[A-Za-z0-9._-]+$")
 
+# The label used wherever a call's release could not be attributed from its own result.
+UNKNOWN = "unknown"
+
+# Exact paths, in precedence order. NEVER a regex over key names: a server may emit an
+# unrelated version (codex-in-claude emits `codex_version`, the Codex CLI's version),
+# and a name-matching heuristic would report on the wrong software. Both `meta.*` and
+# top-level shapes are required — in real corpora roughly half of all results carry no
+# `meta` at all (job/status envelopes), and those carry their identity at top level.
+VERSION_PATHS = (
+    ("meta", "server_version"),
+    ("server_version",),
+    ("meta", "server", "version"),
+    ("server", "version"),
+)
+FINGERPRINT_PATHS = (
+    ("meta", "fingerprint"),
+    ("fingerprint",),
+)
+
+
+def _dig(obj, path: tuple[str, ...]) -> str | None:
+    """The non-empty string at `path` in `obj`, or None. Never raises on odd shapes."""
+    cur = obj
+    for key in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur if isinstance(cur, str) and cur else None
+
+
+def _first_at_paths(obj, paths) -> str | None:
+    for path in paths:
+        found = _dig(obj, path)
+        if found:
+            return found
+    return None
+
+
+def extract_version(obj) -> str | None:
+    """The server's own release, from an allowlisted path in its result envelope."""
+    return _first_at_paths(obj, VERSION_PATHS)
+
+
+def extract_fingerprint(obj) -> str | None:
+    """The server's contract/surface id, from an allowlisted path."""
+    return _first_at_paths(obj, FINGERPRINT_PATHS)
+
+
 # Servers with fewer calls than this sort below the rest: a 1-for-1 error
 # rate is noise, not signal.
 MIN_CALLS_FOR_RATE = 5

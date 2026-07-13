@@ -277,3 +277,51 @@ def test_matching_is_case_insensitive(tmp_path):
     result = mea.audit(root, "SRV", 3)
     assert result["matched_servers"] == ["srv"]
     assert sum(result["total_calls"].values()) == 6
+
+
+# --- version / fingerprint extraction ---------------------------------------
+
+
+def test_extract_version_precedence():
+    # meta.server_version wins over every other shape
+    obj = {
+        "meta": {"server_version": "0.10.0", "server": {"version": "9.9.9"}},
+        "server_version": "8.8.8",
+        "server": {"version": "7.7.7"},
+    }
+    assert mea.extract_version(obj) == "0.10.0"
+    # top-level server_version is next (46% of real results carry no `meta`)
+    assert mea.extract_version({"server_version": "0.9.0"}) == "0.9.0"
+    # then the nested object forms
+    assert mea.extract_version({"meta": {"server": {"version": "0.8.0"}}}) == "0.8.0"
+    assert mea.extract_version({"server": {"version": "0.7.0"}}) == "0.7.0"
+    assert mea.extract_version({}) is None
+
+
+def test_extract_version_ignores_unrelated_version_keys():
+    """Negative control: the regex trap.
+
+    codex-in-claude emits `codex_version` — the version of the Codex CLI it shells
+    out to, NOT its own. A heuristic matching version-ish key names would report on
+    the wrong software. Extraction must be exact-path only.
+    """
+    obj = {
+        "codex_version": "codex-cli 0.144.1",
+        "cache_client_version": "0.144.1",
+        "version_supported": True,
+        "meta": {"fingerprint": "srv/0.1/schema-38"},
+    }
+    assert mea.extract_version(obj) is None
+
+
+def test_extract_fingerprint_both_shapes():
+    assert mea.extract_fingerprint({"meta": {"fingerprint": "a/1"}}) == "a/1"
+    assert mea.extract_fingerprint({"fingerprint": "b/2"}) == "b/2"
+    assert mea.extract_fingerprint({"meta": {"fingerprint": "a/1"}, "fingerprint": "b/2"}) == "a/1"
+    assert mea.extract_fingerprint({}) is None
+
+
+def test_extract_rejects_non_string_and_empty():
+    assert mea.extract_version({"server_version": ""}) is None
+    assert mea.extract_version({"server_version": 10}) is None
+    assert mea.extract_version({"meta": "not-a-dict"}) is None
