@@ -23,6 +23,15 @@
       "category": "utilities"
     },
     {
+      "name": "data-reasoning",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/briandconnelly/data-reasoning.git"
+      },
+      "description": "Skills for reasoning from data — structured exploration that generates honest leads, and hypothesis-driven investigation that adjudicates them",
+      "category": "utilities"
+    },
+    {
       "name": "ipinfo",
       "source": "./plugins/ipinfo",
       "description": "MCP server for getting IP address details, location, and network information via ipinfo.io",
