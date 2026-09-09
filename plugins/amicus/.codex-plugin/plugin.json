@@ -1,0 +1,26 @@
+{
+  "name": "amicus",
+  "version": "0.1.0",
+  "description": "One MCP server for every second-opinion model: consult, review, and delegate with the backend as a parameter.",
+  "author": { "name": "Brian Connelly" },
+  "homepage": "https://github.com/briandconnelly/amicus",
+  "repository": "https://github.com/briandconnelly/amicus",
+  "license": "MIT",
+  "keywords": ["mcp", "codex", "kimi", "claude-code", "code-review", "delegation", "second-opinion"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "amicus (for Codex)",
+    "shortDescription": "Consult, review, and delegate to Codex, Kimi, or Claude — one server, backend as a parameter.",
+    "longDescription": "amicus gives Codex one tool surface for every second-opinion model. Pick the backend as a parameter instead of installing a server per model. Delegation runs in a throwaway git worktree and returns a reviewable diff that is never applied to your working tree. Long jobs run asynchronously with a job id you can poll, cancel, and recover. Enabling a backend that can write makes every tool carry that backend's approval annotations — see docs/MIGRATION.md.",
+    "developerName": "Brian Connelly",
+    "category": "Developer Tools",
+    "capabilities": ["MCP", "Skills"],
+    "websiteURL": "https://github.com/briandconnelly/amicus",
+    "defaultPrompt": [
+      "Get a second opinion on this approach from another model.",
+      "Have another model review my current changes.",
+      "Delegate this task to another model and show me the proposed diff."
+    ]
+  }
+}

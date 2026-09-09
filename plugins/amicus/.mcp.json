@@ -1,0 +1,51 @@
+{
+  "mcpServers": {
+    "amicus": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/briandconnelly/amicus.git@v0.1.0",
+        "amicus-mcp"
+      ],
+      "env_vars": [
+        "AMICUS_ALLOW_CWD_WORKSPACE",
+        "AMICUS_BACKENDS",
+        "AMICUS_CLAUDE_ACCESS",
+        "AMICUS_CLAUDE_BIN",
+        "AMICUS_CLAUDE_CONFIG_MODE",
+        "AMICUS_CLAUDE_MAX_BUDGET_USD",
+        "AMICUS_CLAUDE_MODEL",
+        "AMICUS_CLAUDE_REASONING_EFFORT",
+        "AMICUS_CLAUDE_SUPPORTED_MAJORS",
+        "AMICUS_CODEX_BIN",
+        "AMICUS_CODEX_EXTRA_ARGS",
+        "AMICUS_CODEX_ISOLATION",
+        "AMICUS_CODEX_MODEL",
+        "AMICUS_CODEX_REASONING_EFFORT",
+        "AMICUS_CODEX_SUPPORTED_VERSIONS",
+        "AMICUS_GIT_TIMEOUT_SECONDS",
+        "AMICUS_HOST_NAME",
+        "AMICUS_JOB_MAX_COUNT",
+        "AMICUS_JOB_MAX_SECONDS",
+        "AMICUS_JOB_TTL",
+        "AMICUS_KIMI_BIN",
+        "AMICUS_KIMI_EXTRA_ARGS",
+        "AMICUS_KIMI_ISOLATION",
+        "AMICUS_KIMI_MODEL",
+        "AMICUS_KIMI_REASONING_EFFORT",
+        "AMICUS_KIMI_SUPPORTED_VERSIONS",
+        "AMICUS_LOG_FILE",
+        "AMICUS_LOG_LEVEL",
+        "AMICUS_MAX_DELEGATE_DIFF_BYTES",
+        "AMICUS_MAX_INPUT_BYTES",
+        "AMICUS_MAX_OUTPUT_BYTES",
+        "AMICUS_STATE_DIR",
+        "AMICUS_TASKS",
+        "AMICUS_TASKS_BACKEND_URL",
+        "AMICUS_TIMEOUT_SECONDS",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN"
+      ]
+    }
+  }
+}
