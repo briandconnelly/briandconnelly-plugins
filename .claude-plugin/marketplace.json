@@ -34,6 +34,17 @@
       "category": "utilities"
     },
     {
+      "name": "data-reasoning",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/briandconnelly/data-reasoning.git",
+        "ref": "release",
+        "sha": "851025766e86f249fcba63f20b058007348e7555"
+      },
+      "description": "Skills for reasoning from data: exploratory analysis, hypothesis-driven investigation, causal identification review, and decision analysis",
+      "category": "productivity"
+    },
+    {
       "name": "ipinfo",
       "source": "./plugins/ipinfo",
       "description": "MCP server for getting IP address details, location, and network information via ipinfo.io",

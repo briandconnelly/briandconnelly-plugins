@@ -43,6 +43,20 @@
       "category": "Utilities"
     },
     {
+      "name": "data-reasoning",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/briandconnelly/data-reasoning.git",
+        "ref": "release",
+        "sha": "851025766e86f249fcba63f20b058007348e7555"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    },
+    {
       "name": "ipinfo",
       "source": {
         "source": "local",
