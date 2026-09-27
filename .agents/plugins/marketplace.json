@@ -7,8 +7,10 @@
     {
       "name": "amicus",
       "source": {
-        "source": "local",
-        "path": "./plugins/amicus"
+        "source": "url",
+        "url": "https://github.com/briandconnelly/amicus.git",
+        "ref": "v0.8.0",
+        "sha": "620f4322e52cac811a8003d4b4b98b45ba4b576e"
       },
       "policy": {
         "installation": "AVAILABLE",
