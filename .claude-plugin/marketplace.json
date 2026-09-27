@@ -11,7 +11,9 @@
       "name": "amicus",
       "source": {
         "source": "url",
-        "url": "https://github.com/briandconnelly/amicus.git"
+        "url": "https://github.com/briandconnelly/amicus.git",
+        "ref": "v0.8.0",
+        "sha": "620f4322e52cac811a8003d4b4b98b45ba4b576e"
       },
       "description": "One MCP server for every second-opinion model: consult, review, and delegate with the backend as a parameter",
       "category": "utilities"
@@ -63,7 +65,12 @@
     },
     {
       "name": "tempest",
-      "source": "./plugins/tempest",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/briandconnelly/mcp-server-tempest.git",
+        "ref": "v0.12.0",
+        "sha": "91fa434221357a4ade63f8c7088b5daaa0003d27"
+      },
       "description": "MCP server for accessing WeatherFlow Tempest personal weather station data",
       "category": "utilities"
     },

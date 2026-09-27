@@ -7,8 +7,10 @@
     {
       "name": "amicus",
       "source": {
-        "source": "local",
-        "path": "./plugins/amicus"
+        "source": "url",
+        "url": "https://github.com/briandconnelly/amicus.git",
+        "ref": "v0.8.0",
+        "sha": "620f4322e52cac811a8003d4b4b98b45ba4b576e"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -91,8 +93,10 @@
     {
       "name": "tempest",
       "source": {
-        "source": "local",
-        "path": "./plugins/tempest"
+        "source": "url",
+        "url": "https://github.com/briandconnelly/mcp-server-tempest.git",
+        "ref": "v0.12.0",
+        "sha": "91fa434221357a4ade63f8c7088b5daaa0003d27"
       },
       "policy": {
         "installation": "AVAILABLE",
