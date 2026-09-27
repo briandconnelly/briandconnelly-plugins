@@ -22,7 +22,7 @@ Never classify cloudiness from raw solar radiation thresholds alone.
 
 ## Workflow
 
-1. Resolve the station with `tempest_get_stations` (single station: use it; multiple: prefer the most recently active, else ask).
+1. Resolve the station with `tempest_get_stations` (single station: use it; multiple: list the station names and ask the user to choose, unless the question already names one).
    Note its `latitude` and `longitude` — the script needs them.
 2. Call `tempest_get_observation(station_id, detailed=true)`.
    Detailed mode is required: the concise response omits `station_pressure`.
@@ -31,7 +31,7 @@ Never classify cloudiness from raw solar radiation thresholds alone.
    On tool errors, follow the weather-report skill's error-handling rules: retry once when the error's `temporary` flag is true (honoring `retry_after_ms`); otherwise report the failure in plain language.
 3. Check freshness: compute the observation's age from its `timestamp` / `observed_at` — a fresh fetch can still return an old last-known reading from an offline station.
    If the observation is more than 10 minutes old, say so — the assessment describes the observation time, not necessarily "now".
-   `retrieved_at` and `_meta["net.bconnelly.tempest/fetch"].cache` tell you whether the response came from cache — useful for explaining why data is old (re-fetch with `refresh=true` if the cache is the cause), not for computing its age.
+   `retrieved_at` is when the server fetched the data upstream; if it is well before the current time, the response came from cache — useful for explaining why data is old (re-fetch with `refresh=true` if the cache is the cause), not for computing the observation's age.
 4. Run the bundled script, replacing `$SKILL_DIR` with this skill's base directory (announced when the skill loaded):
 
    ```bash

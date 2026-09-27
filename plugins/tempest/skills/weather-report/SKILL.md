@@ -29,8 +29,9 @@ Use WebSearch only to supplement station data with seasonal norms, historical re
 
 1. **Resolve the station**: Call `tempest_get_stations`.
    - If one station is returned, use it.
-   - If multiple are returned, prefer the most recently active station; if still ambiguous, list the station names and ask the user to choose.
-   - Call `tempest_get_station_details` only if you need the station's sensor `capabilities` ("what can my station measure") — it is their sole source; `tempest_get_stations` omits them and is otherwise identical.
+   - If multiple are returned and the question doesn't name one, list the station names and ask the user to choose — the station list carries no activity timestamp to pick by.
+   - For "what can my station measure", read `station_items` from `tempest_get_stations` — it lists the sensors each station reports.
+     Call `tempest_get_station_details` only if you also need each sensor's indoor/outdoor environment (its `capabilities` list); otherwise it repeats the `tempest_get_stations` entry.
    - If no stations are found, stop and tell the user their account has no Tempest stations configured.
 
 2. **Fetch only what the question requires**:
@@ -40,8 +41,12 @@ Use WebSearch only to supplement station data with seasonal norms, historical re
      When `hours` / `days` are omitted, the response defaults to 6 hourly and 2 daily entries.
      `detailed=true` changes field density only, never the entry count.
      **Check the response's `truncated` flag and `truncation_hint`** (alongside `requested_*` / `returned_*`) to detect an upstream shortfall before telling the user a range is complete.
-   - Derived/comfort metrics (WBGT, delta-T, wet bulb, heat index, air density, feels-like) → pass `detailed=true` to `tempest_get_observation` or `tempest_get_forecast` (only those two accept the parameter).
-     Concise (default) responses omit null-valued fields to save tokens, so these metrics are often absent unless you request detail.
+   - Derived/comfort metrics (WBGT, delta-T, wet bulb, heat index, wind chill, air density) → pass `detailed=true` to `tempest_get_observation` whenever the answer needs one, whether or not the user names it (e.g. delta-T for spray safety).
+     The concise (default) observation omits them.
+     `detailed=true` on `tempest_get_forecast` does not add these metrics — it only keeps null fields and adds station coordinates.
+     The forecast's `current_conditions` carries `feels_like` and, when upstream supplies it, `wet_bulb_temperature`.
+   - To present values in the owner's preferred units you need `station_units`, which only `tempest_get_observation` returns.
+     For a forecast-only question, also call `tempest_get_observation` (it is light) unless you already hold `station_units` for this station.
    - Pass `refresh=true` to `tempest_get_observation` or `tempest_get_forecast` only when the user needs the latest reading (e.g. "right now" during fast-changing conditions) or a cached result is too old; otherwise accept cached data (up to 5 minutes by default).
 
 3. **Check data quality before answering** (see Data Quality below).
@@ -70,6 +75,8 @@ Station data describes one place at one time — reason about both explicitly:
 
 - All time-of-day and calendar reasoning ("this morning", "tonight", "tomorrow") uses the station's timezone (`timezone` in `tempest_get_stations`), with day boundaries at station-local midnight — never the agent's or session's locale.
   Hourly forecast entries carry `local_day` and `local_hour`, which are already station-local.
+- Forecast times come with RFC 3339 UTC twins of their epoch fields: `sunrise_at`, `sunset_at`, and `day_start_at` on daily entries, `starts_at` on hourly entries, and `observed_at` on `current_conditions`.
+  Convert them to the station's `timezone` before stating a clock time ("sunset at 6:56pm").
 - Do not assert time of day unless you know the current time from a trustworthy source (the session's current date/time), converted to the station's timezone.
   The observation `observed_at` (RFC 3339 UTC; same instant as the epoch `timestamp`) is when the reading was taken, not "now" — use it for time-of-day only when the data is fresh (see Data Quality); a stale observation's timestamp is the past.
   Low solar radiation or UV reflects cloud cover, not necessarily dusk, and is never evidence of the time.
@@ -86,10 +93,12 @@ Before interpreting sensor values, check:
 
 - **Stale data**: **If the observation is more than 10 minutes old, say so before answering.**
   Compute the age from the observation's own `observed_at` (or `timestamp`) — a fresh fetch can still return an old last-known reading from an offline station, so `retrieved_at` alone can make stale data look current.
-  `retrieved_at` (RFC 3339 UTC, in every fetching result) is when the data was fetched upstream, and `_meta["net.bconnelly.tempest/fetch"].cache` is the source (`miss` means freshly fetched; `memory` or `disk` means served from cache) — use them to tell the user why data is old, and re-fetch with `refresh=true` if a cached result is the problem.
+  `retrieved_at` (RFC 3339 UTC, in every fetching result) is when the data was fetched upstream; compare it with the current time to see how long the result has been served from cache.
+  Use it to tell the user why data is old, and re-fetch with `refresh=true` if a cached result is the problem.
+  If your client shows result `_meta`, `_meta["net.bconnelly.tempest/fetch"].cache` also names the source (`miss`, `memory`, or `disk`); many clients do not, so never depend on it.
 - **Missing or null fields**: Concise (default) responses omit null-valued optional fields, so an absent field is not an error.
   Some metrics (WBGT, delta-T, air density) are only computed under certain conditions.
-  If a metric you need is missing, re-fetch with `detailed=true`; if it is still null, skip it rather than reporting "null."
+  If a metric you need is missing from an observation, re-fetch it with `detailed=true`; if it is still null, skip it rather than reporting "null."
 - **Implausible values**: A temperature of −50°C or UV of 30 likely indicates a sensor fault.
   Note the anomaly rather than interpreting the value literally.
 - **Forecast vs. observation disagreement**: If current conditions and the forecast's current snapshot differ substantially, prefer the observation and note the discrepancy.
@@ -114,7 +123,7 @@ Act on the `code`:
 
 ## Server Capabilities
 
-The server exposes a machine-readable `tempest://capabilities` resource (also available as the `tempest_get_capabilities` tool, for clients that surface MCP resources poorly) summarizing the available tools, error codes, station scope, units and timestamp conventions, and a surface `fingerprint` — the same value that appears in every result's `_meta["net.bconnelly.tempest/fetch"].fingerprint` (compare `fingerprint_contract_version` too: a change there means the fingerprint is measured differently, not that the surface changed).
+The server exposes a machine-readable `tempest://capabilities` resource (also available as the `tempest_get_capabilities` tool, for clients that surface MCP resources poorly) summarizing the available tools, error codes, station scope, units and timestamp conventions, and a surface `fingerprint` — the same value that appears in every result's `_meta["net.bconnelly.tempest/fetch"].fingerprint` when your client shows `_meta` (compare `fingerprint_contract_version` too: a change there means the fingerprint is measured differently, not that the surface changed).
 When a tool's name or behavior disagrees with these instructions, consult it — a server upgrade is the usual cause.
 Otherwise you don't need it.
 
@@ -130,7 +139,7 @@ When producing a general briefing or when no specific question is asked:
 
 When the user asks when to do an activity ("when should I run today?", "best time to mow the lawn?"):
 
-- Fetch the hourly forecast with explicit `hours` covering the asked horizon; when none is stated, cover the rest of the station-local day.
+- Fetch the hourly forecast with explicit `hours` covering the asked horizon; when none is stated, cover the rest of the station-local day (`hours=24` always reaches it; keep entries whose `local_day` is today).
 - Rank hours on the dimensions the activity cares about: `precip_probability`, `feels_like`, `wind_avg` / `wind_gust`, and `uv`.
 - Recommend one or two windows with reasons, in station-local times ("6–8pm: dry, light wind, cooling to 18°C").
   Hourly entries carry `local_hour` / `local_day`, already in the station's timezone.
@@ -195,7 +204,7 @@ Also:
 
 - **Gust factor**: when `wind_avg` is at least 3 mph / 5 km/h and `wind_gust` is at least twice `wind_avg`, describe conditions as gusty; below that floor, describe the wind as calm or light without gust framing.
   Call it out when it changes advice — drone flying, cycling, spray drift.
-- **Direction**: use the server-provided `wind_direction_cardinal` (forecast entries and the forecast's current snapshot); observations report only `wind_direction` in degrees, so map it to a 16-point cardinal name.
+- **Direction**: use the server-provided 16-point `wind_direction_cardinal` (on observations, forecast entries, and the forecast's current snapshot) rather than converting `wind_direction` degrees yourself.
   Mention direction when it matters to the activity or signals a shift (see Trend Analysis), not on every answer.
 
 ## Pressure-Based Forecasting

@@ -90,27 +90,20 @@ def solar_position(lat: float, lon: float, dt: datetime) -> dict:
     ecc = 0.016708634 - jc * (0.000042037 + 0.0000001267 * jc)
 
     sun_eq_ctr = (
-        math.sin(math.radians(geom_mean_anom))
-        * (1.914602 - jc * (0.004817 + 0.000014 * jc))
+        math.sin(math.radians(geom_mean_anom)) * (1.914602 - jc * (0.004817 + 0.000014 * jc))
         + math.sin(math.radians(2 * geom_mean_anom)) * (0.019993 - 0.000101 * jc)
         + math.sin(math.radians(3 * geom_mean_anom)) * 0.000289
     )
     sun_true_long = geom_mean_long + sun_eq_ctr
     sun_app_long = (
-        sun_true_long
-        - 0.00569
-        - 0.00478 * math.sin(math.radians(125.04 - 1934.136 * jc))
+        sun_true_long - 0.00569 - 0.00478 * math.sin(math.radians(125.04 - 1934.136 * jc))
     )
 
-    mean_obliq = (
-        23 + (26 + (21.448 - jc * (46.815 + jc * (0.00059 - jc * 0.001813))) / 60) / 60
-    )
+    mean_obliq = 23 + (26 + (21.448 - jc * (46.815 + jc * (0.00059 - jc * 0.001813))) / 60) / 60
     obliq_corr = mean_obliq + 0.00256 * math.cos(math.radians(125.04 - 1934.136 * jc))
 
     decl = math.degrees(
-        math.asin(
-            math.sin(math.radians(obliq_corr)) * math.sin(math.radians(sun_app_long))
-        )
+        math.asin(math.sin(math.radians(obliq_corr)) * math.sin(math.radians(sun_app_long)))
     )
 
     # Equation of time (minutes)
@@ -133,9 +126,9 @@ def solar_position(lat: float, lon: float, dt: datetime) -> dict:
 
     lat_r = math.radians(lat)
     decl_r = math.radians(decl)
-    cos_zenith = math.sin(lat_r) * math.sin(decl_r) + math.cos(lat_r) * math.cos(
-        decl_r
-    ) * math.cos(math.radians(hour_angle))
+    cos_zenith = math.sin(lat_r) * math.sin(decl_r) + math.cos(lat_r) * math.cos(decl_r) * math.cos(
+        math.radians(hour_angle)
+    )
     cos_zenith = max(-1, min(1, cos_zenith))
     zenith = math.degrees(math.acos(cos_zenith))
     elevation = 90 - zenith
@@ -152,8 +145,7 @@ def solar_position(lat: float, lon: float, dt: datetime) -> dict:
     elif elevation > -0.575:
         refraction = (
             1735
-            + elevation
-            * (-518.2 + elevation * (103.4 + elevation * (-12.79 + elevation * 0.711)))
+            + elevation * (-518.2 + elevation * (103.4 + elevation * (-12.79 + elevation * 0.711)))
         ) / 3600
     else:
         refraction = -20.774 / (3600 * math.tan(math.radians(elevation)))
@@ -164,9 +156,7 @@ def solar_position(lat: float, lon: float, dt: datetime) -> dict:
     if sin_zenith == 0:
         azimuth = 0.0
     else:
-        cos_az = (math.sin(lat_r) * cos_zenith - math.sin(decl_r)) / (
-            math.cos(lat_r) * sin_zenith
-        )
+        cos_az = (math.sin(lat_r) * cos_zenith - math.sin(decl_r)) / (math.cos(lat_r) * sin_zenith)
         cos_az = max(-1, min(1, cos_az))
         if hour_angle > 0:
             azimuth = (math.degrees(math.acos(cos_az)) + 180) % 360
@@ -331,14 +321,14 @@ def main() -> None:
             parser.error(f"{name} must be a finite number")
     if args.solar_radiation < 0:
         parser.error("--solar-radiation must be non-negative")
+    if args.pressure <= 0:
+        parser.error("--pressure must be positive")
     if not -90 <= args.lat <= 90:
         parser.error("--lat must be between -90 and 90")
     if not -180 <= args.lon <= 180:
         parser.error("--lon must be between -180 and 180")
 
-    result = estimate(
-        args.lat, args.lon, args.timestamp, args.solar_radiation, args.pressure
-    )
+    result = estimate(args.lat, args.lon, args.timestamp, args.solar_radiation, args.pressure)
     json.dump(result, sys.stdout, indent=2, allow_nan=False)
     print()
 

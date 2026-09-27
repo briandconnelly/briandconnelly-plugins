@@ -32,5 +32,5 @@ In Codex, install plugins from the `briandconnelly-plugins` marketplace after ad
 | [orb-cloud](plugins/orb-cloud/) | MCP server for managing Orb Cloud organizations and devices |
 | [orbnet](plugins/orbnet/) | MCP server for monitoring internet quality via Orb Local API |
 | [presence-detector](plugins/presence-detector/) | Skill for detecting whether the user is present at or away from their macOS machine |
-| [tempest](plugins/tempest/) | MCP server for accessing WeatherFlow Tempest personal weather station data |
+| [tempest](https://github.com/briandconnelly/mcp-server-tempest) | MCP server for accessing WeatherFlow Tempest personal weather station data |
 | [voice-notify](plugins/voice-notify/) | Speak Claude Code Stop and Notification events aloud via macOS say |
