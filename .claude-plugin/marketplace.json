@@ -8,6 +8,15 @@
   },
   "plugins": [
     {
+      "name": "amicus",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/briandconnelly/amicus.git"
+      },
+      "description": "One MCP server for every second-opinion model: consult, review, and delegate with the backend as a parameter",
+      "category": "utilities"
+    },
+    {
       "name": "codex-in-claude",
       "source": {
         "source": "url",
