@@ -26,12 +26,12 @@ Never classify cloudiness from raw solar radiation thresholds alone.
    Note its `latitude` and `longitude` — the script needs them.
 2. Call `tempest_get_observation(station_id, detailed=true)`.
    Detailed mode is required: the concise response omits `station_pressure`.
-   Needed fields: `timestamp`, `solar_radiation`, `precip`, and `station_pressure` (or `barometric_pressure` — on Tempest both are the station-level value).
+   Needed fields: `timestamp` (epoch; `observed_at` is the same instant in RFC 3339 UTC), `solar_radiation`, `precip`, and `station_pressure` (or `barometric_pressure` — on Tempest both are the station-level value).
    If `solar_radiation` is absent even in the detailed response, the sensor is not reporting — say so and stop.
    On tool errors, follow the weather-report skill's error-handling rules: retry once when the error's `temporary` flag is true (honoring `retry_after_ms`); otherwise report the failure in plain language.
-3. Check freshness: compute the observation's age from its `timestamp` — a fresh fetch can still return an old last-known reading from an offline station.
+3. Check freshness: compute the observation's age from its `timestamp` / `observed_at` — a fresh fetch can still return an old last-known reading from an offline station.
    If the observation is more than 10 minutes old, say so — the assessment describes the observation time, not necessarily "now".
-   `_meta["net.bconnelly.tempest/fetch"]` (`cache`, `ts_retrieved`), when present, tells you whether the response came from cache — useful for explaining why data is old, not for computing its age.
+   `retrieved_at` and `_meta["net.bconnelly.tempest/fetch"].cache` tell you whether the response came from cache — useful for explaining why data is old (re-fetch with `refresh=true` if the cache is the cause), not for computing its age.
 4. Run the bundled script, replacing `$SKILL_DIR` with this skill's base directory (announced when the skill loaded):
 
    ```bash
@@ -41,7 +41,7 @@ Never classify cloudiness from raw solar radiation thresholds alone.
    ```
 
    It is stdlib-only and prints one JSON object.
-   Prefer `station_pressure` for `--pressure`; `sea_level_pressure` or omitting the flag is acceptable (the effect is small).
+   Prefer `station_pressure` for `--pressure` (observation pressures are always mb, whatever `station_units` says); `sea_level_pressure` or omitting the flag is acceptable (the effect is small).
    `solar_radiation` is always in W/m² regardless of the station's configured units — pass it through unchanged.
 5. Interpret the JSON using the rules below and answer in plain language: lead with the verdict, then support it with the clearness index and observed-vs-expected numbers.
 
