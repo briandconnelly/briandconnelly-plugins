@@ -30,7 +30,7 @@ Use WebSearch only to supplement station data with seasonal norms, historical re
 1. **Resolve the station**: Call `tempest_get_stations`.
    - If one station is returned, use it.
    - If multiple are returned, prefer the most recently active station; if still ambiguous, list the station names and ask the user to choose.
-   - Call `tempest_get_station_details` only if you need hardware metadata or calibration info not available in `tempest_get_stations`.
+   - Call `tempest_get_station_details` only if you need the station's sensor `capabilities` ("what can my station measure") — it is their sole source; `tempest_get_stations` omits them and is otherwise identical.
    - If no stations are found, stop and tell the user their account has no Tempest stations configured.
 
 2. **Fetch only what the question requires**:
@@ -38,10 +38,11 @@ Use WebSearch only to supplement station data with seasonal norms, historical re
    - Forecast or trend questions → also call `tempest_get_forecast`.
      Pass explicit `hours` / `days` to set depth — they are honored in both summary and detailed modes.
      When `hours` / `days` are omitted, the response defaults to 6 hourly and 2 daily entries.
-     Use `detailed=true` only when you need full field density (it also returns every available entry when `hours` / `days` are omitted), not as the way to get more entries.
+     `detailed=true` changes field density only, never the entry count.
      **Check the response's `truncated` flag and `truncation_hint`** (alongside `requested_*` / `returned_*`) to detect an upstream shortfall before telling the user a range is complete.
    - Derived/comfort metrics (WBGT, delta-T, wet bulb, heat index, air density, feels-like) → pass `detailed=true` to `tempest_get_observation` or `tempest_get_forecast` (only those two accept the parameter).
      Concise (default) responses omit null-valued fields to save tokens, so these metrics are often absent unless you request detail.
+   - Pass `refresh=true` to `tempest_get_observation` or `tempest_get_forecast` only when the user needs the latest reading (e.g. "right now" during fast-changing conditions) or a cached result is too old; otherwise accept cached data (up to 5 minutes by default).
 
 3. **Check data quality before answering** (see Data Quality below).
 
@@ -55,9 +56,12 @@ Use WebSearch only to supplement station data with seasonal norms, historical re
 These apply to every response, whichever analysis sections you used:
 
 - Respond in plain language.
-  Translate raw fields into described values in the station's configured units (e.g. `wind_avg: 3.6` → "light breeze at 8 mph" on a station configured for mph), not raw numbers alone.
-- Use the station's configured units.
-  If the user requests a different unit system, convert before responding.
+  Translate raw fields into described values, not raw numbers alone.
+- **Read every value in the units named by that result's own `units` object.**
+  Observation values are always metric/SI (°C, m/s, mb, mm, km) regardless of the station's settings; forecast values follow the forecast result's `units`.
+  `station_units` is only the owner's display preference, never the units of the values.
+- Report in the owner's preferred units from `station_units`, converting as needed (e.g. `wind_avg: 2.5` with `units_wind: mps` → "light breeze around 6 mph" when `station_units.units_wind` is `mph`).
+  If the user requests a different unit system, use that instead.
 - For casual questions like "do I need a jacket?" or "is it good for a run?", give a direct, conversational answer first, back it up with the relevant data points, and add practical advice when it changes what the user should do (gear, timing, route).
 
 ## Time & Place
@@ -67,7 +71,7 @@ Station data describes one place at one time — reason about both explicitly:
 - All time-of-day and calendar reasoning ("this morning", "tonight", "tomorrow") uses the station's timezone (`timezone` in `tempest_get_stations`), with day boundaries at station-local midnight — never the agent's or session's locale.
   Hourly forecast entries carry `local_day` and `local_hour`, which are already station-local.
 - Do not assert time of day unless you know the current time from a trustworthy source (the session's current date/time), converted to the station's timezone.
-  The observation `timestamp` is when the reading was taken, not "now" — use it for time-of-day only when the data is fresh (see Data Quality); a stale observation's timestamp is the past.
+  The observation `observed_at` (RFC 3339 UTC; same instant as the epoch `timestamp`) is when the reading was taken, not "now" — use it for time-of-day only when the data is fresh (see Data Quality); a stale observation's timestamp is the past.
   Low solar radiation or UV reflects cloud cover, not necessarily dusk, and is never evidence of the time.
 - Prefer absolute station-local times ("by 4pm") over relative ones ("in 3 hours"), especially when the data may be stale.
 - Readings describe conditions at the station's location at measurement time.
@@ -81,8 +85,8 @@ Station data describes one place at one time — reason about both explicitly:
 Before interpreting sensor values, check:
 
 - **Stale data**: **If the observation is more than 10 minutes old, say so before answering.**
-  Compute the age from the observation's own `timestamp` — a fresh fetch can still return an old last-known reading from an offline station, so `ts_retrieved` alone can make stale data look current.
-  `_meta["net.bconnelly.tempest/fetch"]` explains provenance rather than age: `cache` is the source (`miss` means freshly fetched; `memory` or `disk` means served from cache) and `ts_retrieved` (RFC 3339 UTC) is when the data was actually fetched upstream — use them to tell the user why data is old.
+  Compute the age from the observation's own `observed_at` (or `timestamp`) — a fresh fetch can still return an old last-known reading from an offline station, so `retrieved_at` alone can make stale data look current.
+  `retrieved_at` (RFC 3339 UTC, in every fetching result) is when the data was fetched upstream, and `_meta["net.bconnelly.tempest/fetch"].cache` is the source (`miss` means freshly fetched; `memory` or `disk` means served from cache) — use them to tell the user why data is old, and re-fetch with `refresh=true` if a cached result is the problem.
 - **Missing or null fields**: Concise (default) responses omit null-valued optional fields, so an absent field is not an error.
   Some metrics (WBGT, delta-T, air density) are only computed under certain conditions.
   If a metric you need is missing, re-fetch with `detailed=true`; if it is still null, skip it rather than reporting "null."
@@ -92,16 +96,17 @@ Before interpreting sensor values, check:
 
 ## Handling Tool Errors
 
-When a tool call fails, the server returns a flat JSON error object instead of weather data, carrying a `code`, a human-readable `message`, a boolean `temporary` flag, and a `request_id`.
+When a tool call fails, the server returns an error result instead of weather data: a flat JSON object carrying a `code`, a human-readable `message`, a boolean `temporary` flag, and a `request_id`, plus optional `hint`, `field`, `value`, `repair`, `retry_after_ms`, and `details`.
+When `repair` is present, it is a ready-made retry: call `repair.tool` with `repair.arguments` exactly.
 Translate it into plain language for the user — never surface the raw JSON.
 Act on the `code`:
 
 - `auth_missing`, `auth_invalid`, `auth_forbidden`: the `WEATHERFLOW_API_TOKEN` is missing, wrong, or lacks access.
   Not retryable — tell the user to check their token configuration.
 - `invalid_argument`: a malformed argument was sent.
-  The payload's `field` and `value` identify it; correct the call and retry.
+  `field` names the offending parameter (an unrecognized argument is named in `details.unknown_argument` instead); follow `repair` to retry once, or correct the call yourself if no `repair` is present.
 - `station_not_found`: the station id is unknown.
-  Re-resolve with `tempest_get_stations` rather than retrying the same id.
+  Re-resolve with `tempest_get_stations` (its `repair` points there) rather than retrying the same id.
 - `rate_limited`, `upstream_unavailable`: `temporary` is true.
   Back off briefly (honor `retry_after_ms` if present), retry once, and if it still fails tell the user the service is briefly unavailable and to try again shortly.
 - `upstream_invalid_response`, `internal_error`: not retryable.
@@ -109,7 +114,7 @@ Act on the `code`:
 
 ## Server Capabilities
 
-The server exposes a machine-readable `tempest://capabilities` resource (also available as the `tempest_get_capabilities` tool, for clients that surface MCP resources poorly) summarizing the available tools, error codes, station scope, and a surface `fingerprint` — the same value that appears in every result's `_meta["net.bconnelly.tempest/fetch"].fingerprint`.
+The server exposes a machine-readable `tempest://capabilities` resource (also available as the `tempest_get_capabilities` tool, for clients that surface MCP resources poorly) summarizing the available tools, error codes, station scope, units and timestamp conventions, and a surface `fingerprint` — the same value that appears in every result's `_meta["net.bconnelly.tempest/fetch"].fingerprint` (compare `fingerprint_contract_version` too: a change there means the fingerprint is measured differently, not that the surface changed).
 When a tool's name or behavior disagrees with these instructions, consult it — a server upgrade is the usual cause.
 Otherwise you don't need it.
 
@@ -177,7 +182,7 @@ Only call out feels-like when it meaningfully differs from actual air temperatur
 ## Wind Interpretation
 
 Describe wind rather than quoting raw numbers.
-Thresholds below are sustained `wind_avg` in mph / km/h; convert from the station's configured wind units (which may be m/s or knots) first:
+Thresholds below are sustained `wind_avg` in mph / km/h; convert from the result's `units.units_wind` (observations are always m/s) first:
 
 - **Calm**: below 1 mph / 2 km/h.
 - **Light**: 1–7 mph / 2–11 km/h.
@@ -190,15 +195,15 @@ Also:
 
 - **Gust factor**: when `wind_avg` is at least 3 mph / 5 km/h and `wind_gust` is at least twice `wind_avg`, describe conditions as gusty; below that floor, describe the wind as calm or light without gust framing.
   Call it out when it changes advice — drone flying, cycling, spray drift.
-- **Direction**: use the server-provided `wind_direction_cardinal`; map `wind_direction` degrees to a 16-point cardinal name only when it is absent.
+- **Direction**: use the server-provided `wind_direction_cardinal` (forecast entries and the forecast's current snapshot); observations report only `wind_direction` in degrees, so map it to a 16-point cardinal name.
   Mention direction when it matters to the activity or signals a shift (see Trend Analysis), not on every answer.
 
 ## Pressure-Based Forecasting
 
 Go beyond reporting the `pressure_trend` value (`falling`, `steady`, or `rising`).
 The server exposes no pressure history, so a rate of change cannot be computed — interpret the categorical trend together with the current sea-level pressure and the short-range forecast.
-Pressure values below are in mb (≡ hPa).
-If the station reports in inHg, multiply by 33.864.
+Pressure values below are in mb (≡ hPa), which is what observations return.
+If a result's `units.units_pressure` is `inhg`, multiply by 33.864.
 
 These are estimates — local topography, season, and frontal structure affect reliability.
 Present as likely outcomes, not certainties.
@@ -227,7 +232,7 @@ Include the guidance below when the user asks about gardening, plants, or yard w
 
 ## Lightning Risk Assessment
 
-Use `lightning_strike_count`, `lightning_strike_count_last_1hr`, `lightning_strike_count_last_3hr`, `lightning_strike_last_distance`, and `lightning_strike_last_epoch`:
+Use `lightning_strike_count`, `lightning_strike_count_last_1hr`, `lightning_strike_count_last_3hr`, `lightning_strike_last_distance` (in the result's `units.units_distance`; km for observations), and `lightning_strike_last_at`:
 
 - **No risk**: Zero strikes in the last 3 hours.
 - **Distant activity**: Strikes detected but >30 km away.
@@ -237,7 +242,7 @@ Use `lightning_strike_count`, `lightning_strike_count_last_1hr`, `lightning_stri
 - **Immediate danger**: Strikes closer than 15 km.
   Advise seeking shelter immediately — avoid open areas, water, tall isolated objects, and metal structures.
 
-Check `lightning_strike_last_epoch` against the current time.
+Check `lightning_strike_last_at` (RFC 3339 UTC; epoch in `lightning_strike_last_epoch`) against the current time.
 Strikes more than a few hours old are historical.
 Use 1-hour and 3-hour counts to judge whether activity is ongoing.
 
