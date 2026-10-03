@@ -47,7 +47,7 @@
       "source": {
         "source": "url",
         "url": "https://github.com/briandconnelly/data-reasoning.git",
-        "ref": "release",
+        "ref": "main",
         "sha": "851025766e86f249fcba63f20b058007348e7555"
       },
       "policy": {
