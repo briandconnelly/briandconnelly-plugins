@@ -24,8 +24,6 @@ In Codex, install plugins from the `briandconnelly-plugins` marketplace after ad
 | **Plugin** | **Description** |
 | --- | --- |
 | [amicus](https://github.com/briandconnelly/amicus) | One MCP server for every second-opinion model: consult, review, and delegate with the backend as a parameter |
-| [claude-in-codex](plugins/claude-in-codex/) | (Codex only) Call Claude Code from Codex for bounded, independent code review and second opinions |
-| [codex-in-claude](https://github.com/briandconnelly/codex-in-claude) | MCP server for calling OpenAI Codex from Claude Code for second opinions, code review, and delegated coding tasks |
 | [cwms](plugins/cwms/) | MCP server for querying U.S. Army Corps of Engineers water data via the CWMS Data API |
 | [data-reasoning](https://github.com/briandconnelly/data-reasoning) | Skills for reasoning from data: exploratory analysis, hypothesis-driven investigation, causal identification review, and decision analysis |
 | [ipinfo](plugins/ipinfo/) | MCP server for getting IP address details, location, and network information via ipinfo.io |
