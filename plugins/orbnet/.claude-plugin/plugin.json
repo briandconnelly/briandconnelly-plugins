@@ -8,14 +8,5 @@
   "repository": "https://github.com/briandconnelly/orbnet",
   "license": "MIT",
   "keywords": ["orb", "networking", "mcp"],
-  "mcpServers": {
-    "orbnet": {
-      "command": "uvx",
-      "args": ["--from", "orbnet[mcp]", "orbnet-mcp"],
-      "env": {
-        "ORB_HOST": "${ORB_HOST}",
-        "ORB_PORT": "${ORB_PORT:-7080}"
-      }
-    }
-  }
+  "mcpServers": "./.mcp.json"
 }

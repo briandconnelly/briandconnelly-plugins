@@ -19,8 +19,10 @@
 ## Local plugins
 
 - Local plugins live in `plugins/<name>/`, and the paths below are relative to that directory.
-- Claude Code manifests live in `.claude-plugin/plugin.json`, with MCP servers defined inline under `mcpServers`.
-- Codex manifests live in `.codex-plugin/plugin.json`, with MCP servers defined in `.mcp.json`.
+- Claude Code manifests live in `.claude-plugin/plugin.json`, and Codex manifests in `.codex-plugin/plugin.json`.
+- Define a plugin's MCP servers once, in `.mcp.json`, and set `"mcpServers": "./.mcp.json"` in both manifests.
+- Do not define MCP servers inline in a manifest, because a second copy of the server pin drifts (cwms 0.9.0 shipped launching cwms-tools 0.8.0 in Claude Code).
+- Bump a plugin's `version` in both manifests whenever a change alters what an install runs, so existing installs see an update (a cwms fix shipped under an unchanged 0.9.0 left `/plugin` reporting the old install as current).
 - A skill's frontmatter `name` must match its directory name within `skills/`.
 - `hooks/hooks.json` loads automatically, so do not add a `hooks` field to `plugin.json` that points to it.
 
