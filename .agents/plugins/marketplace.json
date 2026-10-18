@@ -9,8 +9,8 @@
       "source": {
         "source": "url",
         "url": "https://github.com/briandconnelly/amicus.git",
-        "ref": "v0.10.0",
-        "sha": "08b609699a708bd84d56ba66bd26a22631d980fd"
+        "ref": "v0.11.0",
+        "sha": "feecf7a2bd6cb3bd032194b7f5f9bfcf42eb61e5"
       },
       "policy": {
         "installation": "AVAILABLE",
