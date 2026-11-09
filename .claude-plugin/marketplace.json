@@ -30,7 +30,7 @@
         "source": "url",
         "url": "https://github.com/briandconnelly/data-reasoning.git",
         "ref": "main",
-        "sha": "851025766e86f249fcba63f20b058007348e7555"
+        "sha": "f2340f19b5d97d201d7315837d1f3d90e43018ed"
       },
       "description": "Skills for reasoning from data: exploratory analysis, hypothesis-driven investigation, causal identification review, and decision analysis",
       "category": "productivity"
