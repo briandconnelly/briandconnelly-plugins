@@ -24,6 +24,7 @@ In Codex, install plugins from the `briandconnelly-plugins` marketplace after ad
 | **Plugin** | **Description** |
 | --- | --- |
 | [amicus](https://github.com/briandconnelly/amicus) | One MCP server for every second-opinion model: consult, review, and delegate with the backend as a parameter |
+| [context-audit](https://github.com/briandconnelly/context-audit) | Flags third-party directives in skills, plugins, and MCP tool results that reach a coding agent |
 | [cwms](plugins/cwms/) | MCP server for querying U.S. Army Corps of Engineers water data via the CWMS Data API |
 | [data-reasoning](https://github.com/briandconnelly/data-reasoning) | Skills for reasoning from data: exploratory analysis, hypothesis-driven investigation, causal identification review, and decision analysis |
 | [ipinfo](plugins/ipinfo/) | MCP server for getting IP address details, location, and network information via ipinfo.io |
