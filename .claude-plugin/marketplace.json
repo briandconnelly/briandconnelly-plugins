@@ -12,8 +12,8 @@
       "source": {
         "source": "url",
         "url": "https://github.com/briandconnelly/amicus.git",
-        "ref": "v0.16.0",
-        "sha": "6d9a17fbee7e5470230ef84754be4889d7887948"
+        "ref": "v0.17.0",
+        "sha": "df88a501de11d5d5bab0f3ca4dc4837bb243f657"
       },
       "description": "One MCP server for every second-opinion model: consult, review, and delegate with the backend as a parameter",
       "category": "utilities"
