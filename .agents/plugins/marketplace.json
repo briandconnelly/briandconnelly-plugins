@@ -19,6 +19,20 @@
       "category": "Developer Tools"
     },
     {
+      "name": "context-audit",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/briandconnelly/context-audit.git",
+        "ref": "main",
+        "sha": "d9ee65942a96beee54afc163c196c558125ae8eb"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Security"
+    },
+    {
       "name": "cwms",
       "source": {
         "source": "local",
